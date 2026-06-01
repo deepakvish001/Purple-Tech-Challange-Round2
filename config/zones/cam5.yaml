@@ -1,0 +1,9 @@
+# Zone polygons for CAM 5 (cash counter).
+# Coordinates are in PIXEL space on the 1920x1080 frame.
+# The counter dominates the lower half of the frame.
+
+camera_id: cam_5_cash
+
+zones:
+  - { id: cash_counter, label: "Cash counter (billing)", polygon: [[120, 200],[1080, 200],[1080,1080],[120,1080]] }
+  - { id: counter_queue, label: "Queue area",            polygon: [[800, 400],[1500, 400],[1500,1080],[800,1080]] }

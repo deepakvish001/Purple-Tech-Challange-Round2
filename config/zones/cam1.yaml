@@ -1,0 +1,16 @@
+# Zone polygons for CAM 1 (F.O.H top-wall shelves).
+# Coordinates are in PIXEL space on the 1920x1080 frame.
+# Polygons will be refined during calibration (see scripts/calibrate_zones.py).
+# Initial polygons are placeholders sized from a 30s-into-the-clip frame.
+
+camera_id: cam_1_top
+
+zones:
+  - { id: shelf_farmstay,    label: "Farmstay (EB Korean)", polygon: [[  0,   0],[ 240,   0],[ 240, 600],[  0, 600]] }
+  - { id: shelf_face_shop,   label: "The Face Shop",         polygon: [[240,   0],[ 420,   0],[ 420, 600],[240, 600]] }
+  - { id: shelf_good_vibes,  label: "Good Vibes",            polygon: [[420,   0],[ 600,   0],[ 600, 600],[420, 600]] }
+  - { id: shelf_dermdoc,     label: "DermDoc / Derma",       polygon: [[600,   0],[ 780,   0],[ 780, 600],[600, 600]] }
+  - { id: shelf_minimalist,  label: "Minimalist",            polygon: [[780,   0],[ 950,   0],[ 950, 600],[780, 600]] }
+  - { id: shelf_aqualogica,  label: "Aqualogica",            polygon: [[950,   0],[1130,   0],[1130, 600],[950, 600]] }
+  - { id: unit_nail,         label: "Nail / Fragrance Unit", polygon: [[200, 400],[ 700, 400],[ 700,1080],[200,1080]] }
+  - { id: unit_makeup,       label: "Makeup Unit",           polygon: [[700, 400],[1300, 400],[1300,1080],[700,1080]] }

@@ -1,0 +1,14 @@
+# Zone polygons for CAM 2 (F.O.H bottom-wall shelves).
+# Coordinates are in PIXEL space on the 1920x1080 frame.
+
+camera_id: cam_2_bottom
+
+zones:
+  - { id: shelf_accessories,  label: "Accessories",      polygon: [[  0,  20],[ 220,  20],[ 220, 600],[  0, 600]] }
+  - { id: shelf_alps,         label: "Alps Goodness",    polygon: [[220,  20],[ 380,  20],[ 380, 600],[220, 600]] }
+  - { id: shelf_loreal,       label: "L'Oreal cluster",  polygon: [[380,  20],[ 540,  20],[ 540, 600],[380, 600]] }
+  - { id: shelf_ny_bae,       label: "NY Bae",           polygon: [[540,  20],[ 700,  20],[ 700, 600],[540, 600]] }
+  - { id: shelf_swiss_beauty, label: "Swiss Beauty",     polygon: [[700,  20],[ 880,  20],[ 880, 600],[700, 600]] }
+  - { id: shelf_lakme,        label: "Lakme",            polygon: [[880,  20],[1080,  20],[1080, 600],[880, 600]] }
+  - { id: shelf_faces_canada, label: "Faces Canada",     polygon: [[1080, 20],[1300,  20],[1300, 600],[1080,600]] }
+  - { id: shelf_maybelline,   label: "Maybelline",       polygon: [[1300, 20],[1560,  20],[1560, 600],[1300,600]] }

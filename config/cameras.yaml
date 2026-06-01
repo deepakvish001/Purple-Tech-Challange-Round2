@@ -1,0 +1,59 @@
+# Cameras at Brigade Road. Each is mounted as a separate ingest worker.
+#
+# `role` drives which event types the worker emits.
+# `source` is the video file (relative to /data/video) or RTSP URL.
+# `tripwire` / `zones_file` are role-specific.
+
+store_id: ST1008
+
+cameras:
+  - id: cam_1_top
+    role: foh_top_shelves           # emits zone_entered, zone_dwell
+    source: "CCTV Footage/CAM 1.mp4"
+    codec: h264
+    fps: 30
+    zones_file: zones/cam1.yaml
+
+  - id: cam_2_bottom
+    role: foh_bottom_shelves        # emits zone_entered, zone_dwell
+    source: "CCTV Footage/CAM 2.mp4"
+    codec: h264
+    fps: 30
+    zones_file: zones/cam2.yaml
+
+  - id: cam_3_entry
+    role: entry_exit                # emits person_entered, person_exited
+    source: "CCTV Footage/CAM 3.mp4"
+    codec: h264
+    fps: 30
+    tripwire:
+      line_id: door_main
+      # Pixel coordinates on the 1920x1080 frame. Vertical line down the
+      # glass-partition seam. Right side of frame = mall corridor;
+      # left side = store interior. Crossing right→left = ENTRY.
+      segment: [[960, 60], [960, 1020]]
+      inside_side: left
+      debounce_frames: 5
+
+  - id: cam_4_boh
+    role: back_of_house             # emits staff_observed only
+    source: "CCTV Footage/CAM 4.mp4"
+    codec: hevc
+    fps: 25
+
+  - id: cam_5_cash
+    role: cash_counter              # emits checkout_observed
+    source: "CCTV Footage/CAM 5.mp4"
+    codec: hevc
+    fps: 25
+    zones_file: zones/cam5.yaml
+
+# Funnel zone classification used by the aggregator.
+funnel_classes:
+  shelf:    # zone ids referenced from cam1/cam2 zones files
+    - shelf_*                       # glob — any zone whose id starts with shelf_
+  engage:
+    - unit_makeup
+    - unit_nail
+  checkout:
+    - cash_counter
