@@ -9,23 +9,26 @@ Built for the Purplle Tech Challenge 2026 — Round 2. See
 [`docs/DESIGN.md`](docs/DESIGN.md) for the system architecture and
 [`docs/CHOICES.md`](docs/CHOICES.md) for the engineering trade-offs.
 
-## What it does
+## 30-second tour
 
-1. Ingests five CCTV streams in parallel (one worker per camera): top-wall
-   shelves, bottom-wall shelves, entry vestibule, back-of-house, cash
-   counter.
-2. Runs per-camera YOLOv8 person detection + ByteTrack tracking, and
-   emits OSNet appearance embeddings used for cross-camera identity
-   reconciliation.
-3. Emits structured events (`person_entered`, `person_exited`,
-   `zone_entered`, `zone_dwell`, `checkout_observed`, `staff_observed`)
-   onto a Redis stream.
-4. A stateful aggregator stitches identities across cameras into
-   sessions, joins them with POS receipts, and computes funnel +
-   anomalies.
-5. A FastAPI service exposes `/metrics`, `/funnel`, `/anomalies`,
-   `/zones`, `/sessions`, and `/cameras`. A Streamlit dashboard renders
-   them live.
+1. **Five camera roles** — top-wall shelves (CAM 1), bottom-wall shelves
+   (CAM 2), entry vestibule (CAM 3), back-of-house staff room (CAM 4),
+   cash counter (CAM 5). Each gets its own ingest worker.
+2. **Synthetic-first** — a deterministic event publisher emits realistic
+   detection events so the entire pipeline (events → sessions →
+   funnel → anomalies → API → dashboard) is verifiable in 60 s without
+   the 680 MB footage archive.
+3. **Aggregator** — a pure session state machine stitches detection
+   events into visits, joins POS receipts within ±90 s of checkout, and
+   classifies each session into a funnel stage. Persists to Postgres.
+4. **API** — FastAPI surface (`/metrics`, `/funnel`, `/zones`,
+   `/anomalies`, `/sessions/{id}`, `/cameras`) reads from materialised
+   views the aggregator refreshes every 30 s.
+5. **Dashboard** — Streamlit live UI auto-refreshes every 5 s.
+
+See [`docs/DESIGN.md`](docs/DESIGN.md) §11 for what's shipped vs. what's
+deferred (the per-camera YOLOv8 worker is a stub by design — rationale
+in CHOICES.md §10).
 
 ## Run
 
@@ -64,6 +67,34 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest -q
 ruff check services tests
+```
+
+Regenerate the committed OpenAPI snapshot:
+
+```bash
+PYTHONPATH=. python scripts/dump_openapi.py
+```
+
+## Sanity checks reviewers can run
+
+```bash
+# 1. Is the stack up?
+curl localhost:8000/healthz
+
+# 2. Are events flowing through Redis?
+curl 'localhost:8000/events/recent?n=5' | jq '.events[0]'
+
+# 3. Is the aggregator producing real metrics?
+curl localhost:8000/metrics | jq
+
+# 4. Funnel shape (should monotonically decrease)
+curl localhost:8000/funnel | jq '.stages'
+
+# 5. Zone heat
+curl localhost:8000/zones | jq '.zones'
+
+# 6. Pick a session id from the events feed and inspect it
+curl localhost:8000/sessions/<uuid> | jq
 ```
 
 ## Repository layout
