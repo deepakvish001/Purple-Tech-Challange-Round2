@@ -1,0 +1,19 @@
+# Business-logic thresholds. Tunable without code changes.
+# See docs/CHOICES.md §4 for the reasoning behind each value.
+
+engagement_dwell_s: 20         # min dwell in a zone to count as "engaged"
+pos_join_window_s: 90          # ± window to join POS receipt to a session
+reentry_gap_s: 60              # gap below which re-cross is same session
+session_max_duration_s: 7200   # cap a session at 2 h (covers PMU appts)
+
+operating_hours:
+  open:  "10:00"
+  close: "22:00"
+  tz:    "Asia/Kolkata"
+
+anomaly:
+  footfall_z_threshold: 2.5
+  conversion_drop_pct: 30
+  conversion_min_footfall: 20
+  dead_zone_pct_of_median: 25
+  dead_zone_lookback_days: 14
