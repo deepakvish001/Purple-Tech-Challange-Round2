@@ -1,0 +1,100 @@
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    ports: ["6379:6379"]
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: store
+      POSTGRES_PASSWORD: store
+      POSTGRES_DB: store
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U store"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    ports: ["5432:5432"]
+
+  ingest:
+    build:
+      context: .
+      dockerfile: infra/docker/ingest.Dockerfile
+    env_file: [.env]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      INGEST_MODE: ${INGEST_MODE:-synthetic}
+    volumes:
+      - ./data/video:/data/video:ro
+      - ./config:/app/config:ro
+    depends_on:
+      redis: { condition: service_healthy }
+
+  pos:
+    build:
+      context: .
+      dockerfile: infra/docker/pos.Dockerfile
+    env_file: [.env]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./data/pos:/data/pos:ro
+    depends_on:
+      redis: { condition: service_healthy }
+
+  aggregator:
+    build:
+      context: .
+      dockerfile: infra/docker/aggregator.Dockerfile
+    env_file: [.env]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: postgresql+psycopg://store:store@postgres:5432/store
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    env_file: [.env]
+    environment:
+      DATABASE_URL: postgresql+psycopg://store:store@postgres:5432/store
+      REDIS_URL: redis://redis:6379/0
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/healthz\").status==200 else 1)'"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: infra/docker/dashboard.Dockerfile
+    env_file: [.env]
+    environment:
+      API_BASE: http://api:8000
+    ports: ["8501:8501"]
+    depends_on:
+      api: { condition: service_healthy }
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+
+volumes:
+  pgdata:

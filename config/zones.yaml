@@ -1,0 +1,57 @@
+# Store zones, expressed in floor-plan coordinates (mm from top-left corner
+# of the store layout PNG). The ingest service applies the camera→floor
+# homography to each track before testing membership.
+#
+# Polygon coordinates are (x, y) pairs. The layout image origin is the
+# top-left corner of the store box; +x is right, +y is down.
+
+store_id: ST1008
+
+entry_tripwire:
+  line_id: door_main
+  # The tripwire is a segment on the floor plan. A track is "entered" when
+  # its foot-point crosses from outside_polygon to inside_polygon.
+  segment: [[60, 220], [60, 360]]
+  inside_polygon:  [[60, 0], [2900, 0], [2900, 800], [60, 800]]
+  outside_polygon: [[0, 0], [60, 0], [60, 800], [0, 800]]
+  debounce_frames: 5
+
+zones:
+  # Top wall — brand shelves (left → right)
+  - { id: shelf_eb_korean,   label: "EB Korean",     polygon: [[ 130,   0],[ 320,   0],[ 320, 110],[ 130, 110]] }
+  - { id: shelf_face_shop,   label: "The Face Shop", polygon: [[ 320,   0],[ 530,   0],[ 530, 110],[ 320, 110]] }
+  - { id: shelf_good_vibes,  label: "Good Vibes",    polygon: [[ 530,   0],[ 720,   0],[ 720, 110],[ 530, 110]] }
+  - { id: shelf_dermdoc,     label: "DermDoc",       polygon: [[ 720,   0],[ 910,   0],[ 910, 110],[ 720, 110]] }
+  - { id: shelf_minimalist,  label: "Minimalist",    polygon: [[ 910,   0],[1100,   0],[1100, 110],[ 910, 110]] }
+  - { id: shelf_aqualogica,  label: "Aqualogica",    polygon: [[1100,   0],[1300,   0],[1300, 110],[1100, 110]] }
+  - { id: shelf_lakme_skin,  label: "Lakme Skin",    polygon: [[1300,   0],[1500,   0],[1500, 110],[1300, 110]] }
+  - { id: shelf_accessories, label: "Accessories",   polygon: [[1500,   0],[1700,   0],[1700, 110],[1500, 110]] }
+
+  # Bottom wall — brand shelves (left → right)
+  - { id: shelf_maybelline,  label: "Maybelline",    polygon: [[ 300, 740],[ 530, 740],[ 530, 820],[ 300, 820]] }
+  - { id: shelf_faces_canada,label: "Faces Canada",  polygon: [[ 530, 740],[ 750, 740],[ 750, 820],[ 530, 820]] }
+  - { id: shelf_lakme,       label: "Lakme",         polygon: [[ 750, 740],[ 900, 740],[ 900, 820],[ 750, 820]] }
+  - { id: shelf_colorbar,    label: "Colorbar+Sugar",polygon: [[ 900, 740],[1100, 740],[1100, 820],[ 900, 820]] }
+  - { id: shelf_swiss_beauty,label: "Swiss Beauty",  polygon: [[1100, 740],[1280, 740],[1280, 820],[1100, 820]] }
+  - { id: shelf_renee_nybae, label: "Renee+NY Bae",  polygon: [[1280, 740],[1470, 740],[1470, 820],[1280, 820]] }
+  - { id: shelf_alps,        label: "Alps Goodness", polygon: [[1470, 740],[1640, 740],[1640, 820],[1470, 820]] }
+  - { id: shelf_streax,      label: "Streax",        polygon: [[1640, 740],[1820, 740],[1820, 820],[1640, 820]] }
+
+  # Centre — F.O.H units
+  - { id: unit_nail,         label: "Nail Unit",     polygon: [[ 470, 200],[ 580, 200],[ 580, 540],[ 470, 540]] }
+  - { id: unit_makeup,       label: "Makeup Unit",   polygon: [[ 820, 200],[1100, 200],[1100, 540],[ 820, 540]] }
+  - { id: foh,               label: "F.O.H",         polygon: [[ 120, 130],[1700, 130],[1700, 720],[ 120, 720]] }
+
+  # Right — checkout zone
+  - { id: cash_counter,      label: "Cash Counter",  polygon: [[1700, 120],[2000, 120],[2000, 420],[1700, 420]] }
+  - { id: pmu,               label: "PMU",           polygon: [[2000, 420],[2150, 420],[2150, 620],[2000, 620]] }
+
+# Zone classes used by the funnel logic.
+funnel_classes:
+  shelf:    [shelf_eb_korean, shelf_face_shop, shelf_good_vibes, shelf_dermdoc,
+             shelf_minimalist, shelf_aqualogica, shelf_lakme_skin,
+             shelf_accessories, shelf_maybelline, shelf_faces_canada,
+             shelf_lakme, shelf_colorbar, shelf_swiss_beauty,
+             shelf_renee_nybae, shelf_alps, shelf_streax]
+  engage:   [unit_nail, unit_makeup]
+  checkout: [cash_counter]

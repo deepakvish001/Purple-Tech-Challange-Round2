@@ -1,0 +1,26 @@
+# Datasets and footage — explicitly excluded per challenge brief
+data/
+*.mp4
+*.mkv
+*.avi
+*.zip
+*.csv
+!tests/fixtures/**/*.csv
+
+# Models and weights
+*.pt
+*.onnx
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Env / IDE
+.env
+.idea/
+.vscode/
+*.log
