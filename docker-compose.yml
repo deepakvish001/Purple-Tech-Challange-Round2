@@ -29,7 +29,9 @@ services:
   # AND `docker compose --profile video up`.
   ingest-synth:
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       REDIS_URL: "redis://redis:6379/0"
       INGEST_MODE: "synthetic"
@@ -43,7 +45,9 @@ services:
   ingest-cam1:
     profiles: ["video"]
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       REDIS_URL: "redis://redis:6379/0"
       INGEST_MODE: "video"
@@ -54,7 +58,9 @@ services:
   ingest-cam2:
     profiles: ["video"]
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       REDIS_URL: "redis://redis:6379/0"
       INGEST_MODE: "video"
@@ -65,7 +71,9 @@ services:
   ingest-cam3:
     profiles: ["video"]
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       REDIS_URL: "redis://redis:6379/0"
       INGEST_MODE: "video"
@@ -76,7 +84,9 @@ services:
   ingest-cam4:
     profiles: ["video"]
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       REDIS_URL: "redis://redis:6379/0"
       INGEST_MODE: "video"
@@ -87,7 +97,9 @@ services:
   ingest-cam5:
     profiles: ["video"]
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       REDIS_URL: "redis://redis:6379/0"
       INGEST_MODE: "video"
@@ -97,7 +109,9 @@ services:
 
   api:
     build: { context: ., dockerfile: infra/docker/api.Dockerfile }
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: "postgresql+psycopg://store:store@postgres:5432/store"
       REDIS_URL: "redis://redis:6379/0"
@@ -120,7 +134,9 @@ services:
   aggregator:
     profiles: ["full"]
     build: { context: ., dockerfile: infra/docker/aggregator.Dockerfile }
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       REDIS_URL: "redis://redis:6379/0"
       DATABASE_URL: "postgresql+psycopg://store:store@postgres:5432/store"
@@ -131,7 +147,9 @@ services:
   dashboard:
     profiles: ["full"]
     build: { context: ., dockerfile: infra/docker/dashboard.Dockerfile }
-    env_file: [.env]
+    env_file:
+      - path: .env
+        required: false
     environment:
       API_BASE: "http://api:8000"
     ports: ["8501:8501"]
