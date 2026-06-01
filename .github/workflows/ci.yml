@@ -29,3 +29,56 @@ jobs:
       - uses: actions/checkout@v4
       - name: docker compose config
         run: docker compose config -q
+
+  stack:
+    # Real bring-up: this is the test that catches "works on my machine".
+    # Brings up the default stack, waits for healthchecks, hits the API,
+    # asserts the system is producing real data, then tears down.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bring up default stack
+        run: docker compose up -d --build --wait --wait-timeout 180
+      - name: Wait for synthetic events to flow
+        run: |
+          for i in {1..30}; do
+            n=$(curl -sf http://localhost:8000/events/recent?n=10 \
+                | python -c 'import json,sys; print(json.load(sys.stdin)["count"])' 2>/dev/null || echo 0)
+            if [ "$n" -ge 5 ]; then echo "events flowing ($n)"; exit 0; fi
+            echo "waiting for events ($i) — n=$n"
+            sleep 4
+          done
+          echo "no events on stream — dumping logs"
+          docker compose logs --tail=200
+          exit 1
+      - name: Assert API returns non-zero metrics
+        run: |
+          sleep 30  # let the aggregator's first rollup land
+          curl -sf http://localhost:8000/metrics | tee /tmp/metrics.json
+          python -c "
+          import json, sys
+          m = json.load(open('/tmp/metrics.json'))
+          assert m['footfall']        > 0, 'footfall should be > 0'
+          assert m['unique_visitors'] > 0, 'unique_visitors should be > 0'
+          print('metrics OK:', m)
+          "
+      - name: Assert funnel is populated
+        run: |
+          curl -sf http://localhost:8000/funnel | tee /tmp/funnel.json
+          python -c "
+          import json
+          f = json.load(open('/tmp/funnel.json'))['stages']
+          assert f['entered']  >= f['browsed'],   'funnel monotonicity broken'
+          assert f['browsed']  >= f['engaged'],   'funnel monotonicity broken'
+          assert f['engaged']  >= f['checkout_queued']
+          assert f['checkout_queued'] >= f['purchased']
+          assert f['entered'] > 0, 'no entries'
+          print('funnel OK:', f)
+          "
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --tail=500
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

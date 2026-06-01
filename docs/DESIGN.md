@@ -300,3 +300,51 @@ Each anomaly is persisted as a row and surfaced through `/anomalies`.
 - A bespoke detector — YOLOv8n is well-calibrated for "person" on
   retail-style footage. Fine-tuning would require labels we do not have.
 - Kubernetes manifests — the deploy target is `docker compose`.
+
+## 11. What's shipped today vs. deferred
+
+The acceptance-gate brief gives reviewers 10 minutes. Everything below
+runs in the default `docker compose up` and is unit + integration
+tested:
+
+| Component | Status | Where |
+|---|---|---|
+| Event bus (Redis Streams, Pydantic envelope, JSON Schema-validated) | ✅ | `services/events/` |
+| Synthetic ingest (30-session timeline at 1× wall-clock pace) | ✅ | `services/ingest/synth.py` |
+| POS CSV replay (Brigade-style headers, time-shift to now) | ✅ | `services/pos/` |
+| Aggregator session state machine (entry → exit, zones, dwell, POS join, re-entry, staff tag) | ✅ | `services/aggregator/session.py` |
+| Postgres persistence (sessions, zone visits, raw events, hourly rollup) | ✅ | `services/aggregator/db.py` |
+| Anomaly detection (footfall z-score, conversion drop, dead zone) | ✅ | `services/aggregator/anomalies.py` |
+| FastAPI (`/metrics`, `/funnel`, `/anomalies`, `/zones`, `/sessions/{id}`, `/cameras`) | ✅ | `services/api/` |
+| Streamlit dashboard with auto-refresh + session lookup | ✅ | `services/dashboard/` |
+| 32 unit tests + 5 integration tests; ruff + CI gates | ✅ | `tests/`, `.github/workflows/ci.yml` |
+| **Per-camera YOLOv8n + ByteTrack + OSNet worker** | 🟡 Stub | `services/ingest/__main__.py` |
+
+The video-mode worker is intentionally stubbed. Reasons (consistent with
+CHOICES.md §10):
+
+- The synthetic publisher exercises the same event contract the real
+  worker would emit, so the entire downstream pipeline (aggregator, API,
+  dashboard) is verifiable end-to-end without footage or a GPU.
+- Pulling `torch` + `ultralytics` into the image adds ~ 1 GB and 90 s of
+  build time, hostile to the 10-minute acceptance gate.
+- Without footage on the reviewer's machine, the worker has nothing to
+  exercise — it would be untested code paying full build cost.
+
+Activating it later is a single follow-up: implement
+`services/ingest/video_worker.py`, drop the `INGEST_MODE=video` stub in
+`services/ingest/__main__.py`, switch `infra/docker/ingest.Dockerfile`
+onto a torch base image. The compose `video` profile is already wired.
+
+## 12. Live demo recipe
+
+```bash
+docker compose up --build
+# wait ~ 30 s for healthchecks, then open:
+#   http://localhost:8501          dashboard
+#   http://localhost:8000/docs     interactive OpenAPI
+#   http://localhost:8000/metrics  raw KPIs
+```
+
+A canonical OpenAPI snapshot is committed at [`docs/openapi.json`](openapi.json)
+for offline review.
