@@ -44,7 +44,7 @@ services:
   # ./data/video/CCTV Footage/CAM N.mp4.
   ingest-cam1:
     profiles: ["video"]
-    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
+    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile, target: video }
     env_file:
       - path: .env
         required: false
@@ -57,7 +57,7 @@ services:
 
   ingest-cam2:
     profiles: ["video"]
-    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
+    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile, target: video }
     env_file:
       - path: .env
         required: false
@@ -70,7 +70,7 @@ services:
 
   ingest-cam3:
     profiles: ["video"]
-    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
+    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile, target: video }
     env_file:
       - path: .env
         required: false
@@ -83,7 +83,7 @@ services:
 
   ingest-cam4:
     profiles: ["video"]
-    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
+    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile, target: video }
     env_file:
       - path: .env
         required: false
@@ -96,7 +96,7 @@ services:
 
   ingest-cam5:
     profiles: ["video"]
-    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
+    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile, target: video }
     env_file:
       - path: .env
         required: false
