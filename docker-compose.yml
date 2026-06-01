@@ -24,106 +24,140 @@ services:
       retries: 15
     ports: ["5432:5432"]
 
-  # One ingest worker per camera. The image is the same; CAMERA_ID picks
-  # which entry in config/cameras.yaml the worker uses.
-  ingest-cam1:
+  # Synthetic event publisher. Default ingest source — no footage required.
+  # The per-camera workers below activate when you set INGEST_MODE=video
+  # AND `docker compose --profile video up`.
+  ingest-synth:
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
-    environment: { REDIS_URL: "redis://redis:6379/0", CAMERA_ID: cam_1_top }
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      INGEST_MODE: "synthetic"
+    depends_on:
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  # Per-camera workers (one per CCTV stream). Disabled by default; enable
+  # with `docker compose --profile video up`. Requires footage mounted at
+  # ./data/video/CCTV Footage/CAM N.mp4.
+  ingest-cam1:
+    profiles: ["video"]
+    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      INGEST_MODE: "video"
+      CAMERA_ID: "cam_1_top"
     volumes: ["./data/video:/data/video:ro", "./config:/app/config:ro"]
     depends_on: { redis: { condition: service_healthy } }
 
   ingest-cam2:
+    profiles: ["video"]
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
-    environment: { REDIS_URL: "redis://redis:6379/0", CAMERA_ID: cam_2_bottom }
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      INGEST_MODE: "video"
+      CAMERA_ID: "cam_2_bottom"
     volumes: ["./data/video:/data/video:ro", "./config:/app/config:ro"]
     depends_on: { redis: { condition: service_healthy } }
 
   ingest-cam3:
+    profiles: ["video"]
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
-    environment: { REDIS_URL: "redis://redis:6379/0", CAMERA_ID: cam_3_entry }
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      INGEST_MODE: "video"
+      CAMERA_ID: "cam_3_entry"
     volumes: ["./data/video:/data/video:ro", "./config:/app/config:ro"]
     depends_on: { redis: { condition: service_healthy } }
 
   ingest-cam4:
+    profiles: ["video"]
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
-    environment: { REDIS_URL: "redis://redis:6379/0", CAMERA_ID: cam_4_boh }
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      INGEST_MODE: "video"
+      CAMERA_ID: "cam_4_boh"
     volumes: ["./data/video:/data/video:ro", "./config:/app/config:ro"]
     depends_on: { redis: { condition: service_healthy } }
 
   ingest-cam5:
+    profiles: ["video"]
     build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
-    environment: { REDIS_URL: "redis://redis:6379/0", CAMERA_ID: cam_5_cash }
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      INGEST_MODE: "video"
+      CAMERA_ID: "cam_5_cash"
     volumes: ["./data/video:/data/video:ro", "./config:/app/config:ro"]
     depends_on: { redis: { condition: service_healthy } }
 
-  # Single synthetic event publisher used when INGEST_MODE=synthetic.
-  # The per-camera workers exit early when this is active.
-  ingest-synth:
-    build: { context: ., dockerfile: infra/docker/ingest.Dockerfile }
-    env_file: [.env]
-    environment: { REDIS_URL: "redis://redis:6379/0", INGEST_MODE: "${INGEST_MODE:-synthetic}" }
-    command: ["python", "-m", "services.ingest.synth"]
-    depends_on: { redis: { condition: service_healthy } }
-    profiles: ["synthetic"]
-
-  pos:
-    build:
-      context: .
-      dockerfile: infra/docker/pos.Dockerfile
-    env_file: [.env]
-    environment:
-      REDIS_URL: redis://redis:6379/0
-    volumes:
-      - ./data/pos:/data/pos:ro
-    depends_on:
-      redis: { condition: service_healthy }
-
-  aggregator:
-    build:
-      context: .
-      dockerfile: infra/docker/aggregator.Dockerfile
-    env_file: [.env]
-    environment:
-      REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: postgresql+psycopg://store:store@postgres:5432/store
-    depends_on:
-      redis: { condition: service_healthy }
-      postgres: { condition: service_healthy }
-
   api:
-    build:
-      context: .
-      dockerfile: infra/docker/api.Dockerfile
-    env_file: [.env]
+    build: { context: ., dockerfile: infra/docker/api.Dockerfile }
+    env_file:
+      - path: .env
+        required: false
     environment:
-      DATABASE_URL: postgresql+psycopg://store:store@postgres:5432/store
-      REDIS_URL: redis://redis:6379/0
+      DATABASE_URL: "postgresql+psycopg://store:store@postgres:5432/store"
+      REDIS_URL: "redis://redis:6379/0"
     ports: ["8000:8000"]
     depends_on:
+      redis: { condition: service_healthy }
       postgres: { condition: service_healthy }
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/healthz\").status==200 else 1)'"]
+      test:
+        - CMD-SHELL
+        - "python -c 'import urllib.request,sys; sys.exit(0 if urllib.request.urlopen(\"http://localhost:8000/healthz\").status==200 else 1)'"
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+
+  # Aggregator, dashboard, and prometheus join the default stack as their
+  # slices land. They're behind profiles so `docker compose up` succeeds
+  # today on a freshly cloned repo.
+  aggregator:
+    profiles: ["full"]
+    build: { context: ., dockerfile: infra/docker/aggregator.Dockerfile }
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      DATABASE_URL: "postgresql+psycopg://store:store@postgres:5432/store"
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
 
   dashboard:
-    build:
-      context: .
-      dockerfile: infra/docker/dashboard.Dockerfile
-    env_file: [.env]
+    profiles: ["full"]
+    build: { context: ., dockerfile: infra/docker/dashboard.Dockerfile }
+    env_file:
+      - path: .env
+        required: false
     environment:
-      API_BASE: http://api:8000
+      API_BASE: "http://api:8000"
     ports: ["8501:8501"]
     depends_on:
       api: { condition: service_healthy }
 
   prometheus:
+    profiles: ["full"]
     image: prom/prometheus:latest
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
