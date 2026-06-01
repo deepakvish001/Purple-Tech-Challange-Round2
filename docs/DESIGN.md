@@ -317,24 +317,25 @@ tested:
 | Anomaly detection (footfall z-score, conversion drop, dead zone) | ✅ | `services/aggregator/anomalies.py` |
 | FastAPI (`/metrics`, `/funnel`, `/anomalies`, `/zones`, `/sessions/{id}`, `/cameras`) | ✅ | `services/api/` |
 | Streamlit dashboard with auto-refresh + session lookup | ✅ | `services/dashboard/` |
-| 32 unit tests + 5 integration tests; ruff + CI gates | ✅ | `tests/`, `.github/workflows/ci.yml` |
-| **Per-camera YOLOv8n + ByteTrack + OSNet worker** | 🟡 Stub | `services/ingest/__main__.py` |
+| 44 unit tests + 5 integration tests; ruff + CI gates | ✅ | `tests/`, `.github/workflows/ci.yml` |
+| **Per-camera YOLOv8n + ByteTrack worker** | ✅ Logic tested; runtime needs footage | `services/ingest/video_worker.py` |
 
-The video-mode worker is intentionally stubbed. Reasons (consistent with
-CHOICES.md §10):
+The video worker is fully implemented. Logic that doesn't depend on a
+GPU or footage — tripwire crossing detection, polygon membership, dwell
+accumulation, cash-counter lingering, staff observation rate-limiting —
+is unit-tested via `tests/unit/test_geom.py` and
+`tests/unit/test_track_state.py`.
 
-- The synthetic publisher exercises the same event contract the real
-  worker would emit, so the entire downstream pipeline (aggregator, API,
-  dashboard) is verifiable end-to-end without footage or a GPU.
-- Pulling `torch` + `ultralytics` into the image adds ~ 1 GB and 90 s of
-  build time, hostile to the 10-minute acceptance gate.
-- Without footage on the reviewer's machine, the worker has nothing to
-  exercise — it would be untested code paying full build cost.
+The runtime path (`docker compose --profile video up`) loads YOLOv8n via
+ultralytics on CPU. Verification against real footage requires the
+Brigade clips mounted at `./data/video/CCTV Footage/CAM N.mp4` and is
+the only path that exercises the OpenCV decoder + the YOLO inference +
+ByteTrack. The default `docker compose up` (synthetic mode) does NOT
+need any of that — it's what passes the acceptance gate.
 
-Activating it later is a single follow-up: implement
-`services/ingest/video_worker.py`, drop the `INGEST_MODE=video` stub in
-`services/ingest/__main__.py`, switch `infra/docker/ingest.Dockerfile`
-onto a torch base image. The compose `video` profile is already wired.
+The two paths share the same event contract: a video frame producing a
+`zone_entered` envelope is indistinguishable downstream from the synth
+publisher producing the same one.
 
 ## 12. Live demo recipe
 

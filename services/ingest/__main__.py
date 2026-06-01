@@ -25,14 +25,10 @@ def main() -> int:
         asyncio.run(synth_main())
         return 0
     if mode == "video":
-        camera_id = os.environ.get("CAMERA_ID", "<unset>")
-        print(
-            f"[ingest] INGEST_MODE=video selected but the per-camera worker "
-            f"is not yet implemented (CAMERA_ID={camera_id}). "
-            "See PR series — slice 2.5 wires YOLO + ByteTrack here.",
-            file=sys.stderr,
-        )
-        return 2
+        from services.ingest.video_worker import _main as video_main
+
+        asyncio.run(video_main())
+        return 0
     print(f"[ingest] Unknown INGEST_MODE={mode!r}", file=sys.stderr)
     return 2
 
