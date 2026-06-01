@@ -33,15 +33,17 @@ Built for the Purplle Tech Challenge 2026 — Round 2. See
 docker compose up --build
 ```
 
-Default stack: **Redis + Postgres + synthetic event publisher + FastAPI**.
-The synthetic publisher emits realistic detection events (entries, zone
-visits, checkouts, POS receipts, staff pings) so reviewers can verify the
-API without downloading the 680 MB CCTV archive.
+Default stack: **Redis + Postgres + synthetic ingest + POS + aggregator +
+FastAPI + Streamlit dashboard**. The synthetic publisher emits realistic
+detection events so the dashboard is populated within seconds — no
+footage download needed.
 
-- API docs:        <http://localhost:8000/docs>
-- Live metrics:    <http://localhost:8000/metrics>
-- Recent events:   <http://localhost:8000/events/recent?n=20>
-- Prometheus exp:  <http://localhost:8000/metrics-prom>
+- **Dashboard**:    <http://localhost:8501>
+- API docs:         <http://localhost:8000/docs>
+- Live metrics:     <http://localhost:8000/metrics>
+- Live funnel:      <http://localhost:8000/funnel>
+- Recent events:    <http://localhost:8000/events/recent?n=20>
+- Prometheus exp:   <http://localhost:8000/metrics-prom>
 
 To replay real footage instead, drop clips into `./data/video/` and:
 
@@ -49,8 +51,7 @@ To replay real footage instead, drop clips into `./data/video/` and:
 docker compose --profile video up --build
 ```
 
-To bring up the dashboard + aggregator + prometheus stack (added in
-follow-up slices):
+To add the Prometheus scraper:
 
 ```bash
 docker compose --profile full up --build

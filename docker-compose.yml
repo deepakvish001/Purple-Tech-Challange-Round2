@@ -164,19 +164,20 @@ services:
       redis: { condition: service_healthy }
     restart: unless-stopped
 
-  # Dashboard + Prometheus stay behind `--profile full` until their slices
-  # land.
+  # Dashboard joins the default stack. Prometheus stays behind --profile
+  # full until anyone needs scraping in this single-store deployment.
   dashboard:
-    profiles: ["full"]
     build: { context: ., dockerfile: infra/docker/dashboard.Dockerfile }
     env_file:
       - path: .env
         required: false
     environment:
       API_BASE: "http://api:8000"
+      DASHBOARD_REFRESH_S: "5"
     ports: ["8501:8501"]
     depends_on:
       api: { condition: service_healthy }
+    restart: unless-stopped
 
   prometheus:
     profiles: ["full"]
