@@ -2,213 +2,301 @@
 
 ## 1. Problem framing
 
-The store at Brigade Road has one customer-facing entry/exit (left wall, glass
-door) and a long rectangular floor with brand shelves lining the top and
-bottom walls, a makeup unit and a nail/fragrance unit in the centre F.O.H,
-and the cash counter + PMU station on the right.
+The Brigade Road store is observed by **five CCTV cameras**. Inspecting the
+supplied footage (`Datasets` release) makes their roles unambiguous:
+
+| Camera | Resolution | FPS | Role |
+|---|---|---|---|
+| **CAM 1** | 1080p H.264 | 30 | F.O.H **top-wall shelves** (Farmstay/Korean → Aqualogica) |
+| **CAM 2** | 1080p H.264 | 30 | F.O.H **bottom-wall shelves** (Accessories → Maybelline) |
+| **CAM 3** | 1080p H.264 | 30 | **Entry / exit vestibule** — glass-partition view of the door |
+| **CAM 4** | 1080p HEVC | 25 | **Back-of-house** (stockroom, staff break area) |
+| **CAM 5** | 1080p HEVC | 25 | **Cash counter / billing** |
+
+Each camera produces ~2 minutes of footage in the supplied sample. Timestamps
+on every clip read `10/04/2026 ~20:10`, which lines up with the POS CSV
+(`Brigade_Bangalore_10_April_26`) — so detection events can be joined to
+receipts purely by wall-clock time.
 
 Business questions we need to answer from raw CCTV + POS data:
 
 | Question | Metric | Source |
 |---|---|---|
-| How many people walked in today? | `footfall` | CCTV entry line crossings |
-| Which brand shelves get attention? | `zone_dwell`, `zone_unique_visitors` | CCTV zone events |
-| What's our funnel? | `enter → browse → engage → checkout → purchase` | CCTV + POS join |
-| What's our conversion rate? | `purchases / footfall` per hour | CCTV + POS |
+| How many people walked in today? | `footfall` | CAM 3 entry tripwire |
+| Which brand shelves get attention? | `zone_dwell`, `zone_unique_visitors` | CAM 1 + CAM 2 zone events |
+| What's our funnel? | `enter → browse → engage → checkout → purchase` | All cams + POS |
+| What's our conversion rate? | `purchases / footfall` per hour | CAM 3 + POS |
 | Anything unusual? | hourly footfall z-score, conv-rate drop, dead zones | aggregator |
 
 The challenge explicitly values **engineering judgment over model
 complexity**, so the design optimises for: (a) one-command bring-up,
-(b) clean event schema that survives detection noise, and
-(c) session-based funnel logic that does not double-count.
+(b) clean event schema that survives detection noise across five views,
+(c) session-based funnel logic that does not double-count even when the
+same person appears in multiple cameras.
 
 ## 2. High-level architecture
 
 ```
-┌───────────────┐    frames     ┌──────────────────┐   detection_events
-│ Video source  │──────────────▶│ Ingest service   │─────────────┐
-│ (file / RTSP) │               │ YOLO + ByteTrack │             │
-└───────────────┘               │ + zone mapper    │             ▼
-                                └──────────────────┘     ┌───────────────┐
-                                                         │ Redis Streams │
-┌───────────────┐    receipts   ┌──────────────────┐     │  events:*     │
-│ POS CSV       │──────────────▶│ POS ingester     │────▶│               │
-└───────────────┘               └──────────────────┘     └───────┬───────┘
-                                                                 │ consume
-                                                                 ▼
-                                                         ┌───────────────┐
-                                                         │ Aggregator    │
-                                                         │  sessions,    │
-                                                         │  funnel,      │
-                                                         │  anomalies    │
-                                                         └───────┬───────┘
-                                                                 │ writes
-                                                                 ▼
-                                                         ┌───────────────┐
-                                                         │ Postgres      │
-                                                         │ (analytics)   │
-                                                         └───────┬───────┘
-                                                                 │
-                            ┌────────────────────────────────────┴──────┐
-                            ▼                                           ▼
-                    ┌───────────────┐                          ┌───────────────┐
-                    │ FastAPI       │                          │ Streamlit     │
-                    │ /metrics      │                          │ dashboard     │
-                    │ /funnel       │◀─────────────────────────│               │
-                    │ /anomalies    │                          └───────────────┘
-                    └───────────────┘
+       ┌───────────────────────────────────────────────────────────┐
+       │ Five video sources (file replay or RTSP)                  │
+       │  CAM 1   CAM 2   CAM 3   CAM 4   CAM 5                    │
+       └───┬───────┬───────┬───────┬───────┬───────────────────────┘
+           │       │       │       │       │
+           ▼       ▼       ▼       ▼       ▼
+       ┌───────────────────────────────────────────────┐
+       │ Ingest workers (one per camera)               │
+       │   YOLOv8 person detection                     │
+       │   ByteTrack within-camera tracking            │
+       │   OSNet appearance embedding per track        │
+       │   Zone / tripwire evaluation                  │
+       └───────────────────────┬───────────────────────┘
+                               │ detection_events
+                               ▼
+                       ┌───────────────┐
+                       │ Redis Streams │ events stream
+                       └───────┬───────┘
+                               │ consume
+                               ▼
+       ┌────────────────────────────────────────────────┐
+       │ Aggregator                                     │
+       │  • cross-camera identity matcher (embeddings)  │
+       │  • session state machine (opens/closes on CAM3)│
+       │  • POS receipt join (±90 s window on CAM 5)    │
+       │  • staff classifier (CAM 4 gallery)            │
+       │  • funnel + anomaly computations               │
+       └───────────────────────┬────────────────────────┘
+                               │ writes
+                               ▼
+                       ┌───────────────┐
+                       │ Postgres      │
+                       │ (analytics)   │
+                       └───────┬───────┘
+            ┌──────────────────┴──────────────────┐
+            ▼                                     ▼
+    ┌───────────────┐                     ┌───────────────┐
+    │ FastAPI       │                     │ Streamlit     │
+    │ /metrics      │◀────────────────────│ dashboard     │
+    │ /funnel       │                     └───────────────┘
+    │ /anomalies    │
+    └───────────────┘
 ```
 
 Each box is one container in `docker-compose.yml`. Redis Streams is the
-canonical event bus; Postgres holds the materialised aggregates the API reads
-from. The aggregator is the only writer to Postgres.
+canonical event bus; Postgres holds the materialised aggregates the API
+reads from. The aggregator is the only writer to Postgres.
 
-## 3. Detection pipeline
+**One ingest worker per camera** isolates failures (a stalled CAM 4 cannot
+back up CAM 3) and lets us scale horizontally without changing code. The
+workers share a Docker image; the `CAMERA_ID` env var selects which video
+file or RTSP URL they read.
+
+## 3. Detection pipeline (per-camera)
 
 **Frame source.** `services/ingest` reads an MP4 file (or RTSP URL) via
 OpenCV. Frame rate is decoupled from wall clock — we forward a monotonic
 `frame_ts` derived from the source timestamp so the pipeline produces the
-same events whether we play back at 1× or 4×.
+same events at 1× or 4× playback.
 
 **Detection.** YOLOv8n (`ultralytics`) with `classes=[0]` (person).
-Lightweight, runs on CPU at a few FPS, GPU if available. The detection
-threshold (0.4) is conservative — we'd rather miss a frame than spawn
-phantom tracks.
+Lightweight, runs on CPU at a few FPS, GPU if available. Threshold `0.4`
+— we'd rather miss a frame than spawn phantom tracks.
 
-**Tracking.** ByteTrack via `supervision`. ByteTrack is robust to short
-occlusions (people passing behind the makeup chairs) because it keeps
-low-confidence detections in a secondary association pass. Track IDs are
-the unit of identity throughout the system.
+**Within-camera tracking.** ByteTrack via `supervision`. Robust to short
+occlusions (people passing behind the makeup unit, behind a colleague at
+the cash counter). Track IDs are local to a camera and prefixed
+(`c1_track_417`, `c5_track_22`) to stay unambiguous downstream.
 
-**Entry/exit counting.** A single virtual *tripwire* is drawn across the
-door corridor on the left wall. A track is counted as `person_entered` when
-its centroid crosses the line in the inward direction and the track has at
-least *N* frames of history (debounces shimmer). The reverse triggers
-`person_exited`. The line is configured in `config/zones.yaml`, not
-hard-coded.
+**Appearance embedding.** A lightweight OSNet model (`torchreid`'s
+`osnet_x0_25`, ~ 1 M params, runs on CPU) produces a 512-d embedding per
+track update. The embedding is the bridge between cameras — it's what the
+aggregator uses to decide that `c3_track_5` (entered through the door) and
+`c1_track_19` (now browsing Lakme Skin) are the same person.
 
-**Zone mapping.** The store layout PNG (`docs/store_layout.png`, drawn from
-the supplied Excel) defines polygons for each shelf cluster, the F.O.H, the
-nail unit, the makeup unit, the cash counter, and the PMU. A one-time
-homography (`H`) is computed by clicking ≥4 corresponding points between the
-camera view and the floor plan; the result is stored in
-`config/homography.json`. At runtime we transform each track's foot point
-(bottom-centre of the bbox) into floor coordinates and lookup the zone.
+**Per-camera responsibilities.** Each camera has different work to do:
+
+| Camera | What ingest emits |
+|---|---|
+| CAM 1 | `zone_entered`, `zone_dwell` for top-wall shelf polygons |
+| CAM 2 | `zone_entered`, `zone_dwell` for bottom-wall shelf polygons |
+| CAM 3 | `person_entered`, `person_exited` on the door tripwire |
+| CAM 4 | `staff_observed` — any track seen here joins the staff gallery |
+| CAM 5 | `checkout_observed` when track lingers > 5 s near counter |
+
+All events carry `camera_id`, `track_id`, `embedding_id` (FK into a fast
+embedding store), and `ts`. The aggregator stitches identities.
+
+**Entry/exit counting (CAM 3).** A single virtual *tripwire* is drawn
+vertically across the glass-partition seam in CAM 3. The vestibule's
+**right half** is the mall corridor (dark tile), the **left half** is the
+store interior (wood floor + Purplle standee). A track crossing **right →
+left** for the first time triggers `person_entered`; the reverse triggers
+`person_exited`. A debounce of N frames prevents shimmer. The tripwire and
+direction are configured in `config/cameras.yaml`.
+
+**Zone mapping (CAM 1, CAM 2, CAM 5).** Each in-store camera has its own
+zone polygons in pixel coordinates (no homography needed because each
+camera is the single observer of its zones). Polygons live in
+`config/zones/cam1.yaml`, `cam2.yaml`, `cam5.yaml`. The track's foot point
+(bottom-centre of bbox) is tested against polygons each frame.
 
 **Edge cases we explicitly handle:**
 
 | Case | Approach |
 |---|---|
-| **Re-entry within the visit** | Tracks that exit the entry-line and re-cross within `REENTRY_GAP_S` (default 60 s) reuse the same `session_id` via short-term re-identification on appearance embeddings. Beyond the gap, a new session is opened — matches retail intuition (stepping back out vs returning later). |
-| **Staff / salespeople** | The POS CSV gives us the closing salesperson roster (`salesperson_id`, `salesperson_name`). At startup we sample N appearance crops of each ID near the cash counter and PMU during the opening hour. Tracks whose embedding distance to any staff centroid stays below a threshold are tagged `role=staff` and excluded from `footfall`. Falls back to a "lingers > 30 min and frequents back-of-house zones" heuristic when no embedding match is found. |
-| **Group entry** | Each track is counted independently. We additionally publish `group_id` when two or more tracks enter within 2 s of each other and stay within 1.5 m on the floor plan for ≥ 10 s — so conversion can be measured per-group too. |
-| **Occlusion behind makeup unit** | ByteTrack's low-conf second pass handles short gaps. For longer gaps (> 1 s) we keep the track in a `lost` state for up to 5 s before retiring it, which prevents inflating entry counts when someone steps behind a fixture. |
-| **Camera glare / empty frames** | Sliding window: if detection variance collapses to zero for > 30 s during operating hours, the ingester emits a `health_warning` event instead of silently producing nothing. |
+| **Same person seen in multiple cameras** | Cross-camera matcher: when a track first appears in a camera, the aggregator queries the embedding store for the nearest neighbour among active sessions within the last 30 s. Match below threshold → attach to that session. No match → new candidate session, confirmed when CAM 3 entry is associated. |
+| **Re-entry within the visit** | A track that exits CAM 3's tripwire and re-crosses inward within `REENTRY_GAP_S` (default 60 s) is matched by appearance to the previously-open session and the session stays open. Beyond the gap, a new session is opened. |
+| **Staff / salespeople** | CAM 4 is the back-of-house. Any track that appears in CAM 4 contributes its embedding centroid to a `staff` gallery. Tracks on customer-facing cameras whose embedding distance to the staff gallery falls below a threshold are tagged `role=staff` and excluded from `footfall`. The salesperson roster from the POS CSV provides labels we attach when matches are confident. |
+| **Group entry** | Each track is counted independently for footfall. We additionally publish `group_id` when two or more CAM 3 entry events fall within 2 s and the embeddings co-locate in CAM 1/2 for ≥ 10 s — so conversion can be measured per-group too. |
+| **Occlusion behind fixtures** | ByteTrack's low-conf second pass handles short gaps. Longer gaps (> 1 s) are buffered as `lost` for up to 5 s before retiring, which prevents inflating entry counts when someone steps behind a fixture. |
+| **Camera glare / dropped feed** | A sliding window per camera: if detection variance collapses to zero for > 30 s during operating hours, the ingester emits `health_warning(camera_id, reason="frozen")` instead of silently producing nothing. |
+| **Customer at billing but no receipt** | If `checkout_observed` is followed by no `pos_receipt` in `POS_JOIN_WINDOW_S` (±90 s), the session terminates at the `checkout_queued` funnel stage — counted as drop-off, not purchase. Conversely, an unmatched POS receipt is logged but not back-attributed to a session. |
 
-## 4. Event schema
+## 4. Cross-camera identity reconciliation
 
-All events are JSON, written to Redis Stream `events` with the
-`type` field as a routing key. Common envelope:
+This is the only genuinely interesting algorithmic component of the system,
+and the place where the multi-camera setup pays off.
+
+State held by the aggregator:
+
+- `active_sessions: dict[session_id, SessionState]` — open sessions.
+- `embedding_store: ANN index of (track_id, camera_id, ts, embedding)`
+  keeping the last 30 s of embeddings across all cameras (FAISS L2,
+  in-memory).
+- `staff_gallery: list[embedding]` — bootstrapped from CAM 4.
+
+On every detection event:
+
+1. If `camera_id == CAM 3` and the event is `person_entered`: open a new
+   candidate session. Stash the track's recent embeddings.
+2. If `camera_id ∈ {CAM 1, CAM 2, CAM 5}` and a *new* track starts: query
+   the ANN index for the nearest neighbour with `cos_dist < REID_THRESHOLD`
+   (default 0.35). If matched to a session within 30 s → attach.
+   Otherwise hold the track as orphan until a future CAM 3 retro-match
+   resolves it (covers the case where ingest workers fire out of order).
+3. If `camera_id == CAM 4`: tag the track's embedding as `staff` and
+   update the gallery centroid.
+4. If a session's embedding closely matches the staff gallery
+   (`cos_dist < STAFF_THRESHOLD`, default 0.3): mark `role=staff`.
+
+The 30 s window matches typical in-store walking time from door to back
+shelf and avoids combinatorial blow-up. The thresholds are config, not
+constants — see CHOICES.md §3.
+
+## 5. Event schema
+
+All events are JSON, written to Redis Stream `events`. Common envelope:
 
 ```json
 {
-  "event_id": "uuid",
-  "type": "person_entered",
-  "store_id": "ST1008",
-  "camera_id": "cam_entrance",
-  "ts": "2026-04-10T16:55:36.412+05:30",
-  "session_id": "sess_…",
-  "track_id": 4127,
-  "role": "customer",
-  "payload": { … type-specific … }
+  "event_id":  "uuid",
+  "type":      "person_entered",
+  "store_id":  "ST1008",
+  "camera_id": "cam_3_entry",
+  "ts":        "2026-04-10T20:10:14.412+05:30",
+  "session_id": null,
+  "track_id":   "c3_track_5",
+  "embedding_id": "emb_…",
+  "role":       "unknown",
+  "payload":    { … type-specific … }
 }
 ```
 
-| Event type | `payload` |
-|---|---|
-| `person_entered` | `{ direction: "in", line_id: "door_main" }` |
-| `person_exited` | `{ direction: "out", line_id: "door_main", duration_s: 312 }` |
-| `zone_entered` | `{ zone_id: "shelf_lakme", first_visit: true }` |
-| `zone_dwell` | `{ zone_id, dwell_s: 47.2 }` — emitted on zone exit |
-| `checkout_observed` | `{ zone_id: "cash_counter", queue_pos: 2 }` |
-| `pos_receipt` | `{ invoice_number, salesperson_id, total_amount, items: N }` |
-| `health_warning` | `{ source, reason }` |
+`session_id` is `null` at emit time for in-store cameras; the aggregator
+fills it in after reconciliation. The events are *not* mutated — the
+aggregator writes its own `session_event` rows with the resolved
+`session_id`.
+
+| Event type | Emitted by | `payload` |
+|---|---|---|
+| `person_entered` | CAM 3 | `{ direction: "in", line_id: "door_main" }` |
+| `person_exited`  | CAM 3 | `{ direction: "out", line_id: "door_main" }` |
+| `zone_entered`   | CAM 1, CAM 2 | `{ zone_id, first_visit_in_session }` |
+| `zone_dwell`     | CAM 1, CAM 2 | `{ zone_id, dwell_s }` |
+| `checkout_observed` | CAM 5 | `{ zone_id: "cash_counter", queue_position }` |
+| `staff_observed` | CAM 4 | `{}` |
+| `pos_receipt`    | POS ingester | `{ invoice_number, salesperson_id, total_amount, item_count, payment_mode }` |
+| `group_detected` | aggregator | `{ group_id, member_session_ids }` |
+| `health_warning` | any ingester | `{ source, reason }` |
 
 Full schema with JSON Schema validation lives in
 [`docs/EVENT_SCHEMA.md`](EVENT_SCHEMA.md).
 
-## 5. Sessions, funnel, and conversion
+## 6. Sessions, funnel, and conversion
 
-A **session** is one customer visit. It opens on `person_entered`, closes on
-the matching `person_exited`, and is the unit against which all funnel and
-conversion stats are computed — so a single visitor cannot be double-counted
-no matter how many shelves they touch.
+A **session** is one customer visit. It opens on a `person_entered` event
+from CAM 3 and closes on the matching `person_exited`. All zone, engage,
+and checkout events that the cross-camera matcher binds to the session
+land on its timeline. A single visitor cannot be double-counted no matter
+how many cameras observed them.
 
-**Funnel stages** (each session can reach at most one terminal stage):
+**Funnel stages** (each session reaches at most one terminal stage):
 
-1. `entered` — entry-line crossing.
-2. `browsed` — has any `zone_entered` for a shelf zone.
-3. `engaged` — has `zone_dwell ≥ 20 s` in any shelf or the makeup unit.
-4. `checkout_queued` — has `checkout_observed` at the cash counter zone.
-5. `purchased` — a `pos_receipt` lands within ±90 s of the session's
-   `checkout_observed` time window (best-effort timestamp join — the POS
-   has no track ID).
+1. `entered` — CAM 3 inward tripwire crossing.
+2. `browsed` — any `zone_entered` for a shelf zone (CAM 1 or CAM 2).
+3. `engaged` — `zone_dwell ≥ 20 s` in any shelf or the makeup unit.
+4. `checkout_queued` — `checkout_observed` from CAM 5 attributed.
+5. `purchased` — a `pos_receipt` falls within ±90 s of the session's
+   `checkout_observed`. The bill is assigned to the session whose
+   `checkout_observed` timestamp is closest; ties broken by earliest.
 
-The choice of ±90 s and the dwell threshold are configurable; see
-CHOICES.md §4.
+**Conversion rate** = `purchased / entered`, per hour and per day.
 
-**Conversion rate** = `purchased / entered`, computed per hour and per day.
+## 7. APIs
 
-## 6. APIs
-
-FastAPI (`services/api`). All responses are JSON; query params standard.
+FastAPI (`services/api`). All responses JSON; query params standard.
 
 | Endpoint | Returns |
 |---|---|
 | `GET /metrics?from=…&to=…` | footfall, unique sessions, avg dwell, conversion |
-| `GET /funnel?from=…&to=…` | counts per funnel stage + drop-off % |
-| `GET /zones` | per-zone unique visitors, total dwell, peak hour |
+| `GET /funnel?from=…&to=…`  | counts per funnel stage + drop-off % |
+| `GET /zones`               | per-zone unique visitors, total dwell, peak hour |
 | `GET /anomalies?from=…&to=…` | list of detected anomalies with severity |
-| `GET /sessions/{id}` | full timeline of a single session |
-| `GET /healthz` `/readyz` | liveness / readiness |
-| `GET /metrics-prom` | Prometheus exposition |
+| `GET /sessions/{id}`       | full timeline of a single session, all cameras |
+| `GET /cameras`             | per-camera health, fps, last event ts |
+| `GET /healthz` `/readyz`   | liveness / readiness |
+| `GET /metrics-prom`        | Prometheus exposition |
 
 OpenAPI spec is auto-published at `/docs`.
 
-## 7. Anomaly detection
+## 8. Anomaly detection
 
 Three families, all running on a 1-minute schedule inside the aggregator:
 
 1. **Footfall outlier** — rolling 7-day same-weekday-same-hour mean & std;
    flag if `|z| > 2.5`.
-2. **Conversion drop** — compare current-hour conversion against prior-3-hour
-   mean; flag if drop > 30 % and footfall > 20.
-3. **Dead zone** — a shelf zone whose unique-visitor count over the last hour
-   is < 25 % of its 14-day median, during operating hours.
+2. **Conversion drop** — compare current-hour conversion against
+   prior-3-hour mean; flag if drop > 30 % and footfall > 20.
+3. **Dead zone** — a shelf zone whose unique-visitor count over the last
+   hour is < 25 % of its 14-day median, during operating hours.
 
 Each anomaly is persisted as a row and surfaced through `/anomalies`.
 
-## 8. Production readiness
+## 9. Production readiness
 
 - **Deployment**: single `docker compose up`. Health checks gate startup
-  order (Redis → Postgres → aggregator → api/dashboard).
+  order (Redis → Postgres → aggregator → ingest×5 → api/dashboard).
 - **Observability**:
   - Structured JSON logs with `trace_id` propagated through Redis message
     headers.
-  - Prometheus metrics: events-per-second, processing lag, API latency
-    histograms.
+  - Prometheus metrics: events-per-second per camera, processing lag,
+    cross-camera match rate, API latency histograms.
   - OpenTelemetry traces from API → Postgres exported to the optional
     `otel-collector` container.
 - **Testing**:
   - Unit tests for tripwire crossing, zone polygon lookup, session
-    state-machine, POS-timestamp join.
-  - Integration test that replays a 30 s fixture clip + synthetic POS rows
-    and asserts a known event sequence and final `/metrics` payload.
+    state-machine, cross-camera matcher (synthetic embeddings), POS
+    timestamp join.
+  - Integration test that replays a 30 s fixture clip from each camera
+    + synthetic POS rows and asserts a known event sequence and final
+    `/metrics` payload.
   - CI workflow runs `pytest` + `ruff` + `mypy` on every push.
 
-## 9. Out of scope (by design)
+## 10. Out of scope (by design)
 
-- Multi-camera fusion (the store has one usable entry view).
-- Person re-identification across days.
-- Demographic inference (age/gender) — both ethically fraught and out of the
+- Person re-identification across days — out of rubric scope and raises
+  privacy concerns we are not equipped to weigh in this timeframe.
+- Demographic inference (age/gender) — ethically fraught and out of the
   evaluation rubric.
+- A bespoke detector — YOLOv8n is well-calibrated for "person" on
+  retail-style footage. Fine-tuning would require labels we do not have.
+- Kubernetes manifests — the deploy target is `docker compose`.
