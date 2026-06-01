@@ -1,49 +1,49 @@
-"""Minimal FastAPI stub.
+"""DB-backed FastAPI surface.
 
-This slice ships only the endpoints needed to clear the acceptance gate:
-`/healthz`, `/readyz`, `/metrics`, plus a debug `/events/recent`. They
-compute live from the raw Redis Stream so reviewers can see the system
-working without the aggregator + Postgres pipeline.
-
-The real implementations (materialised views, funnel computation,
-anomalies) replace these in a follow-up slice — same routes, same shapes.
+`/metrics`, `/funnel`, `/anomalies`, `/zones`, `/sessions/{id}`, `/cameras`
+all read from the materialised aggregator tables. `/events/recent` keeps
+its stream-tail behaviour as a debug window.
 """
 
 from __future__ import annotations
 
 import os
-from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from prometheus_client import Counter as PCounter
 
+from services.aggregator import db
 from services.events import EventBus
-from services.events.schemas import EVENT_TYPES
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-
-events_seen = PCounter("api_events_seen_total", "Events observed by API debug reads", ["type"])
+REDIS_URL    = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://store:store@postgres:5432/store")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.bus = EventBus(REDIS_URL)
     try:
+        app.state.pool = await db.open_pool(DATABASE_URL)
+    except Exception:  # noqa: BLE001
+        app.state.pool = None  # API stays up, /readyz reports the failure
+    try:
         yield
     finally:
+        if app.state.pool is not None:
+            await app.state.pool.close()
         await app.state.bus.close()
 
 
-app = FastAPI(
-    title="Store Intelligence API",
-    version="0.1.0",
-    lifespan=lifespan,
-)
+app = FastAPI(title="Store Intelligence API", version="0.2.0", lifespan=lifespan)
+
+
+# --------------------------------------------------------------------------
+# Health
+# --------------------------------------------------------------------------
 
 
 @app.get("/healthz")
@@ -53,87 +53,105 @@ async def healthz() -> dict[str, str]:
 
 @app.get("/readyz")
 async def readyz() -> dict[str, Any]:
+    redis_ok = False
+    db_ok = False
     try:
         await app.state.bus.ping()
-        return {"status": "ready", "redis": "ok"}
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"redis_unreachable: {e}") from e
+        redis_ok = True
+    except Exception:  # noqa: BLE001
+        pass
+    if app.state.pool is not None:
+        try:
+            async with app.state.pool.connection() as conn, conn.cursor() as cur:
+                await cur.execute("SELECT 1")
+                await cur.fetchone()
+            db_ok = True
+        except Exception:  # noqa: BLE001
+            pass
+    if not (redis_ok and db_ok):
+        raise HTTPException(503, detail={"redis": redis_ok, "postgres": db_ok})
+    return {"status": "ready", "redis": "ok", "postgres": "ok"}
+
+
+# --------------------------------------------------------------------------
+# Analytics (DB-backed)
+# --------------------------------------------------------------------------
+
+
+def _pool_or_503(app: FastAPI):
+    if app.state.pool is None:
+        raise HTTPException(503, detail="database_unavailable")
+    return app.state.pool
 
 
 @app.get("/metrics")
-async def metrics() -> dict[str, Any]:
-    """Live metrics computed from the recent event window.
-
-    This is a placeholder that computes from the last 1000 events on the
-    stream. Once the aggregator + Postgres land, this endpoint reads from
-    `mv_hourly_metrics` instead.
-    """
-    bus: EventBus = app.state.bus
-    recent = await bus.recent(n=1000)
-    for ev in recent:
-        events_seen.labels(type=ev.type).inc(0)  # ensure series exist
-
-    counts: Counter[str] = Counter(ev.type for ev in recent)
-    customers = {
-        ev.embedding_id
-        for ev in recent
-        if ev.type == "person_entered" and ev.role != "staff" and ev.embedding_id
-    }
-    purchases = counts["pos_receipt"]
-    footfall = counts["person_entered"]
+async def metrics(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
+    pool = _pool_or_503(app)
+    m = await db.fetch_recent_metrics(pool, hours=hours)
+    footfall = int(m["footfall"])
+    purchases = int(m["purchases"])
     return {
-        "computed_at": datetime.now(UTC).isoformat(),
-        "window": "stream_tail_1000",
-        "footfall": footfall,
-        "unique_visitors": len(customers),
-        "checkouts_observed": counts["checkout_observed"],
-        "purchases": purchases,
-        "conversion_rate": (purchases / footfall) if footfall else 0.0,
-        "events_by_type": {t: counts.get(t, 0) for t in EVENT_TYPES},
-        "stream_length": await bus.stream_length(),
+        "computed_at":            datetime.now(UTC).isoformat(),
+        "window_hours":           hours,
+        "footfall":               footfall,
+        "unique_visitors":        int(m["unique_visitors"]),
+        "purchases":              purchases,
+        "checkouts_observed":     int(m["checkouts"]),
+        "conversion_rate":        (purchases / footfall) if footfall else 0.0,
+        "avg_session_duration_s": float(m["avg_session_duration_s"] or 0),
     }
+
+
+@app.get("/funnel")
+async def funnel(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
+    pool = _pool_or_503(app)
+    stages = await db.fetch_funnel(pool, hours=hours)
+    return {
+        "computed_at":  datetime.now(UTC).isoformat(),
+        "window_hours": hours,
+        "stages":       stages,
+    }
+
+
+@app.get("/anomalies")
+async def anomalies(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
+    pool = _pool_or_503(app)
+    rows = await db.fetch_anomalies(pool, hours=hours)
+    return {"count": len(rows), "anomalies": rows}
+
+
+@app.get("/zones")
+async def zones(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
+    pool = _pool_or_503(app)
+    return {"zones": await db.fetch_zone_summary(pool, hours=hours)}
+
+
+@app.get("/sessions/{session_id}")
+async def session_get(session_id: str) -> dict[str, Any]:
+    pool = _pool_or_503(app)
+    row = await db.fetch_session(pool, session_id)
+    if not row:
+        raise HTTPException(404, detail="session_not_found")
+    return row
+
+
+@app.get("/cameras")
+async def cameras() -> dict[str, Any]:
+    pool = _pool_or_503(app)
+    return {"cameras": await db.fetch_cameras_health(pool)}
+
+
+# --------------------------------------------------------------------------
+# Debug + Prometheus
+# --------------------------------------------------------------------------
 
 
 @app.get("/events/recent")
-async def events_recent(n: int = 50) -> dict[str, Any]:
-    bus: EventBus = app.state.bus
-    n = max(1, min(500, n))
-    recent = await bus.recent(n=n)
+async def events_recent(n: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
+    recent = await app.state.bus.recent(n=n)
     return {"count": len(recent), "events": [e.model_dump(mode="json") for e in recent]}
 
 
 @app.get("/metrics-prom", response_class=PlainTextResponse)
 async def metrics_prom() -> Any:
     return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
-
-
-@app.get("/funnel")
-async def funnel() -> dict[str, Any]:
-    """Placeholder funnel — real implementation in the aggregator slice."""
-    bus: EventBus = app.state.bus
-    recent = await bus.recent(n=1000)
-    by_session: dict[str, set[str]] = {}
-    # `embedding_id` is a stand-in for `session_id` until the aggregator
-    # publishes resolved sessions.
-    for ev in recent:
-        key = ev.embedding_id or ev.event_id
-        by_session.setdefault(key, set()).add(ev.type)
-
-    stages = {"entered": 0, "browsed": 0, "engaged": 0, "checkout_queued": 0, "purchased": 0}
-    for types in by_session.values():
-        if "person_entered" in types:
-            stages["entered"] += 1
-        if "zone_entered" in types:
-            stages["browsed"] += 1
-        if "zone_dwell" in types:
-            stages["engaged"] += 1
-        if "checkout_observed" in types:
-            stages["checkout_queued"] += 1
-        if "pos_receipt" in types:
-            stages["purchased"] += 1
-    return {
-        "computed_at": datetime.now(UTC).isoformat(),
-        "window": "stream_tail_1000",
-        "stages": stages,
-        "note": "preliminary — aggregator slice replaces with session-true counts",
-    }

@@ -113,7 +113,7 @@ services:
       - path: .env
         required: false
     environment:
-      DATABASE_URL: "postgresql+psycopg://store:store@postgres:5432/store"
+      DATABASE_URL: "postgresql://store:store@postgres:5432/store"
       REDIS_URL: "redis://redis:6379/0"
     ports: ["8000:8000"]
     depends_on:
@@ -128,22 +128,44 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # Aggregator, dashboard, and prometheus join the default stack as their
-  # slices land. They're behind profiles so `docker compose up` succeeds
-  # today on a freshly cloned repo.
+  # Aggregator: consumes events, persists sessions to Postgres, refreshes
+  # hourly_metrics + detects anomalies. In the default stack so the API
+  # serves real data.
   aggregator:
-    profiles: ["full"]
     build: { context: ., dockerfile: infra/docker/aggregator.Dockerfile }
     env_file:
       - path: .env
         required: false
     environment:
       REDIS_URL: "redis://redis:6379/0"
-      DATABASE_URL: "postgresql+psycopg://store:store@postgres:5432/store"
+      DATABASE_URL: "postgresql://store:store@postgres:5432/store"
+      ROLLUP_INTERVAL_S: "30"
+      ANOMALY_INTERVAL_S: "60"
     depends_on:
       redis: { condition: service_healthy }
       postgres: { condition: service_healthy }
+    restart: unless-stopped
 
+  # POS CSV replay. Idle unless a CSV is mounted at /data/pos/. Synth mode
+  # already produces pos_receipt events so this only kicks in when the
+  # reviewer wires the real Brigade CSV.
+  pos:
+    build: { context: ., dockerfile: infra/docker/pos.Dockerfile }
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      REDIS_URL: "redis://redis:6379/0"
+      POS_DIR: "/data/pos"
+      STORE_ID: "ST1008"
+      POS_PACE: "1.0"
+    volumes: ["./data/pos:/data/pos:ro"]
+    depends_on:
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+
+  # Dashboard + Prometheus stay behind `--profile full` until their slices
+  # land.
   dashboard:
     profiles: ["full"]
     build: { context: ., dockerfile: infra/docker/dashboard.Dockerfile }
