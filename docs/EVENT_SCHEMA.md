@@ -36,7 +36,6 @@ CAM 3 short-lived candidate id for entry events.
 | `checkout_observed` | cam_5_cash | `zone_id`, `queue_position` |
 | `staff_observed` | cam_4_boh | `{}` |
 | `pos_receipt`    | pos | `invoice_number`, `salesperson_id`, `total_amount`, `item_count`, `payment_mode` |
-| `group_detected` | aggregator | `group_id`, `member_session_ids` |
 | `health_warning` | any ingester | `source`, `reason` |
 
 ## Ordering & delivery guarantees

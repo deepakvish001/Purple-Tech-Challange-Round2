@@ -154,7 +154,9 @@ async def insert_anomaly(
 
 
 async def fetch_recent_metrics(pool: AsyncConnectionPool, hours: int = 24) -> dict[str, Any]:
-    sql = """
+    # Hourly rollup has the volumetric metrics; sessions table has revenue
+    # (the rollup doesn't sum receipt_total).
+    rollup_sql = """
         SELECT
             COALESCE(SUM(footfall), 0)        AS footfall,
             COALESCE(SUM(unique_visitors), 0) AS unique_visitors,
@@ -164,12 +166,109 @@ async def fetch_recent_metrics(pool: AsyncConnectionPool, hours: int = 24) -> di
         FROM hourly_metrics
         WHERE hour_bucket >= now() - (%s * interval '1 hour')
     """
+    revenue_sql = """
+        SELECT
+            COALESCE(SUM(receipt_total), 0)::float                                        AS revenue,
+            COALESCE(AVG(NULLIF(receipt_total, 0)), 0)::float                             AS avg_basket,
+            COALESCE(SUM(receipt_items), 0)                                               AS items_sold,
+            COUNT(*) FILTER (WHERE receipt_total IS NOT NULL)                             AS purchase_count
+        FROM sessions
+        WHERE entered_at >= now() - (%s * interval '1 hour')
+          AND role != 'staff'
+    """
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(rollup_sql, (hours,))
+        row = await cur.fetchone() or {}
+        await cur.execute(revenue_sql, (hours,))
+        rev = await cur.fetchone() or {}
+    out = dict(row) if row else {"footfall": 0, "unique_visitors": 0, "purchases": 0, "checkouts": 0, "avg_session_duration_s": 0.0}
+    out.update(rev)
+    return out
+
+
+async def fetch_hourly_breakdown(pool: AsyncConnectionPool, hours: int = 24) -> list[dict[str, Any]]:
+    """Per-hour rollup for the conversion sparkline."""
+    sql = """
+        SELECT hour_bucket, footfall, purchases,
+               CASE WHEN footfall > 0
+                    THEN purchases::float / footfall
+                    ELSE 0 END AS conversion_rate
+        FROM hourly_metrics
+        WHERE hour_bucket >= now() - (%s * interval '1 hour')
+        ORDER BY hour_bucket ASC
+    """
     async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
         await cur.execute(sql, (hours,))
-        row = await cur.fetchone()
-    if row is None:
-        return {"footfall": 0, "unique_visitors": 0, "purchases": 0, "checkouts": 0, "avg_session_duration_s": 0.0}
-    return dict(row)
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def fetch_recent_purchases(pool: AsyncConnectionPool, limit: int = 20) -> list[dict[str, Any]]:
+    """For the live activity feed."""
+    sql = """
+        SELECT session_id, entered_at, exited_at, funnel_stage, checkout_at,
+               receipt_invoice, receipt_total, receipt_items, receipt_mode, receipt_salesperson
+        FROM sessions
+        WHERE role != 'staff'
+        ORDER BY COALESCE(checkout_at, entered_at) DESC
+        LIMIT %s
+    """
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(sql, (limit,))
+        rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def fetch_sales_breakdown(pool: AsyncConnectionPool, hours: int = 24) -> dict[str, Any]:
+    """Top salespeople, payment-mode split, hourly revenue."""
+    by_salesperson_sql = """
+        SELECT receipt_salesperson AS salesperson,
+               COUNT(*) AS purchases,
+               COALESCE(SUM(receipt_total), 0)::float AS revenue,
+               COALESCE(SUM(receipt_items), 0)        AS items
+        FROM sessions
+        WHERE entered_at >= now() - (%s * interval '1 hour')
+          AND receipt_total IS NOT NULL
+          AND role != 'staff'
+          AND receipt_salesperson IS NOT NULL
+        GROUP BY receipt_salesperson
+        ORDER BY revenue DESC
+        LIMIT 5
+    """
+    by_mode_sql = """
+        SELECT COALESCE(receipt_mode, 'UNKNOWN') AS mode,
+               COUNT(*) AS purchases,
+               COALESCE(SUM(receipt_total), 0)::float AS revenue
+        FROM sessions
+        WHERE entered_at >= now() - (%s * interval '1 hour')
+          AND receipt_total IS NOT NULL
+          AND role != 'staff'
+        GROUP BY mode
+        ORDER BY revenue DESC
+    """
+    hourly_revenue_sql = """
+        SELECT date_trunc('hour', checkout_at) AS hour_bucket,
+               COUNT(*)                        AS purchases,
+               COALESCE(SUM(receipt_total), 0)::float AS revenue
+        FROM sessions
+        WHERE checkout_at >= now() - (%s * interval '1 hour')
+          AND receipt_total IS NOT NULL
+          AND role != 'staff'
+        GROUP BY hour_bucket
+        ORDER BY hour_bucket ASC
+    """
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(by_salesperson_sql, (hours,))
+        salespeople = [dict(r) for r in await cur.fetchall()]
+        await cur.execute(by_mode_sql, (hours,))
+        modes = [dict(r) for r in await cur.fetchall()]
+        await cur.execute(hourly_revenue_sql, (hours,))
+        hourly = [dict(r) for r in await cur.fetchall()]
+    return {
+        "top_salespeople": salespeople,
+        "payment_modes":   modes,
+        "hourly_revenue":  hourly,
+    }
 
 
 async def fetch_funnel(pool: AsyncConnectionPool, hours: int = 24) -> dict[str, int]:

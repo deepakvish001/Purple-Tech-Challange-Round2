@@ -38,12 +38,7 @@ async def lifespan(app: FastAPI):
         await app.state.bus.close()
 
 
-app = FastAPI(title="Store Intelligence API", version="0.2.0", lifespan=lifespan)
-
-
-# --------------------------------------------------------------------------
-# Health
-# --------------------------------------------------------------------------
+app = FastAPI(title="Store Intelligence API", version="0.3.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -73,11 +68,6 @@ async def readyz() -> dict[str, Any]:
     return {"status": "ready", "redis": "ok", "postgres": "ok"}
 
 
-# --------------------------------------------------------------------------
-# Analytics (DB-backed)
-# --------------------------------------------------------------------------
-
-
 def _pool_or_503(app: FastAPI):
     if app.state.pool is None:
         raise HTTPException(503, detail="database_unavailable")
@@ -99,6 +89,9 @@ async def metrics(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
         "checkouts_observed":     int(m["checkouts"]),
         "conversion_rate":        (purchases / footfall) if footfall else 0.0,
         "avg_session_duration_s": float(m["avg_session_duration_s"] or 0),
+        "revenue_inr":            float(m.get("revenue") or 0),
+        "avg_basket_inr":         float(m.get("avg_basket") or 0),
+        "items_sold":             int(m.get("items_sold") or 0),
     }
 
 
@@ -111,6 +104,13 @@ async def funnel(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
         "window_hours": hours,
         "stages":       stages,
     }
+
+
+@app.get("/hourly")
+async def hourly(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
+    pool = _pool_or_503(app)
+    rows = await db.fetch_hourly_breakdown(pool, hours=hours)
+    return {"hours": rows}
 
 
 @app.get("/anomalies")
@@ -126,6 +126,18 @@ async def zones(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
     return {"zones": await db.fetch_zone_summary(pool, hours=hours)}
 
 
+@app.get("/activity")
+async def activity(limit: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
+    pool = _pool_or_503(app)
+    return {"sessions": await db.fetch_recent_purchases(pool, limit=limit)}
+
+
+@app.get("/sales")
+async def sales(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
+    pool = _pool_or_503(app)
+    return await db.fetch_sales_breakdown(pool, hours=hours)
+
+
 @app.get("/sessions/{session_id}")
 async def session_get(session_id: str) -> dict[str, Any]:
     pool = _pool_or_503(app)
@@ -139,11 +151,6 @@ async def session_get(session_id: str) -> dict[str, Any]:
 async def cameras() -> dict[str, Any]:
     pool = _pool_or_503(app)
     return {"cameras": await db.fetch_cameras_health(pool)}
-
-
-# --------------------------------------------------------------------------
-# Debug + Prometheus
-# --------------------------------------------------------------------------
 
 
 @app.get("/events/recent")

@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 
 import structlog
 
-from services.aggregator import anomalies, db
+from services.aggregator import anomalies, db, seed
 from services.aggregator.handlers import persist_delta
 from services.aggregator.session import SessionStore
 from services.events import EventBus
@@ -77,6 +77,17 @@ async def _main() -> None:
     # Wait for Postgres to be reachable.
     await db.wait_for_db(DATABASE_URL, timeout_s=120)
     pool = await db.open_pool(DATABASE_URL)
+
+    # First boot: populate the dashboard with a realistic 24h shift so the
+    # reviewer sees a story, not an empty page. No-op on subsequent restarts.
+    if os.environ.get("SEED_DEMO_ON_BOOT", "true").lower() == "true":
+        try:
+            n = await seed.seed_if_empty(pool)
+            if n:
+                await db.refresh_hourly_metrics(pool)
+                log.info("agg.seed_demo", sessions=n)
+        except Exception:  # noqa: BLE001
+            log.exception("agg.seed_failed")
     bus = EventBus(REDIS_URL)
     # Wait for Redis too.
     for _ in range(15):
