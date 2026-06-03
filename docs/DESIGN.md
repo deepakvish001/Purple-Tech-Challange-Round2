@@ -146,41 +146,32 @@ camera is the single observer of its zones). Polygons live in
 | **Same person seen in multiple cameras** | Cross-camera matcher: when a track first appears in a camera, the aggregator queries the embedding store for the nearest neighbour among active sessions within the last 30 s. Match below threshold → attach to that session. No match → new candidate session, confirmed when CAM 3 entry is associated. |
 | **Re-entry within the visit** | A track that exits CAM 3's tripwire and re-crosses inward within `REENTRY_GAP_S` (default 60 s) is matched by appearance to the previously-open session and the session stays open. Beyond the gap, a new session is opened. |
 | **Staff / salespeople** | CAM 4 is the back-of-house. Any track that appears in CAM 4 contributes its embedding centroid to a `staff` gallery. Tracks on customer-facing cameras whose embedding distance to the staff gallery falls below a threshold are tagged `role=staff` and excluded from `footfall`. The salesperson roster from the POS CSV provides labels we attach when matches are confident. |
-| **Group entry** | Each track is counted independently for footfall. We additionally publish `group_id` when two or more CAM 3 entry events fall within 2 s and the embeddings co-locate in CAM 1/2 for ≥ 10 s — so conversion can be measured per-group too. |
-| **Occlusion behind fixtures** | ByteTrack's low-conf second pass handles short gaps. Longer gaps (> 1 s) are buffered as `lost` for up to 5 s before retiring, which prevents inflating entry counts when someone steps behind a fixture. |
+| **Occlusion behind fixtures** | ByteTrack's low-conf second pass handles short gaps. Stale tracks are retired after `TRACK_TTL_S` (5 s), which prevents inflating entry counts when someone steps behind a fixture. |
 | **Camera glare / dropped feed** | A sliding window per camera: if detection variance collapses to zero for > 30 s during operating hours, the ingester emits `health_warning(camera_id, reason="frozen")` instead of silently producing nothing. |
 | **Customer at billing but no receipt** | If `checkout_observed` is followed by no `pos_receipt` in `POS_JOIN_WINDOW_S` (±90 s), the session terminates at the `checkout_queued` funnel stage — counted as drop-off, not purchase. Conversely, an unmatched POS receipt is logged but not back-attributed to a session. |
 
 ## 4. Cross-camera identity reconciliation
 
-This is the only genuinely interesting algorithmic component of the system,
-and the place where the multi-camera setup pays off.
+**Shipped today.** The aggregator's `SessionStore` keys sessions on the
+event's `embedding_id` (falling back to `track_id` when absent). A
+session opens on `person_entered` from CAM 3 and closes on the matching
+`person_exited`. Events from CAM 1/2/5 attach to the open session whose
+key matches. CAM 4 sightings flip the session's `role` to `staff`.
+Re-entry within `REENTRY_GAP_S` (60 s) reopens the previous session
+instead of starting a new one.
 
-State held by the aggregator:
+For the synthetic publisher, embedding_ids are stable across cameras for
+a given customer (the simulator knows the ground truth). For the video
+worker, embedding_ids are deterministic per camera+track — so events
+from a single camera bind into one session correctly, but a customer
+walking from CAM 3 → CAM 1 won't merge across cameras without a real
+appearance descriptor.
 
-- `active_sessions: dict[session_id, SessionState]` — open sessions.
-- `embedding_store: ANN index of (track_id, camera_id, ts, embedding)`
-  keeping the last 30 s of embeddings across all cameras (FAISS L2,
-  in-memory).
-- `staff_gallery: list[embedding]` — bootstrapped from CAM 4.
-
-On every detection event:
-
-1. If `camera_id == CAM 3` and the event is `person_entered`: open a new
-   candidate session. Stash the track's recent embeddings.
-2. If `camera_id ∈ {CAM 1, CAM 2, CAM 5}` and a *new* track starts: query
-   the ANN index for the nearest neighbour with `cos_dist < REID_THRESHOLD`
-   (default 0.35). If matched to a session within 30 s → attach.
-   Otherwise hold the track as orphan until a future CAM 3 retro-match
-   resolves it (covers the case where ingest workers fire out of order).
-3. If `camera_id == CAM 4`: tag the track's embedding as `staff` and
-   update the gallery centroid.
-4. If a session's embedding closely matches the staff gallery
-   (`cos_dist < STAFF_THRESHOLD`, default 0.3): mark `role=staff`.
-
-The 30 s window matches typical in-store walking time from door to back
-shelf and avoids combinatorial blow-up. The thresholds are config, not
-constants — see CHOICES.md §3.
+**Deferred (CHOICES.md §10).** Production cross-cam re-ID via an
+OSNet embedding + FAISS index — the contract is already shaped so this
+slot in cleanly: replace the embedding_id generator in
+`services/ingest/track_state.py` with an OSNet hash, and the
+SessionStore matching code keeps working unchanged.
 
 ## 5. Event schema
 
@@ -215,7 +206,6 @@ aggregator writes its own `session_event` rows with the resolved
 | `checkout_observed` | CAM 5 | `{ zone_id: "cash_counter", queue_position }` |
 | `staff_observed` | CAM 4 | `{}` |
 | `pos_receipt`    | POS ingester | `{ invoice_number, salesperson_id, total_amount, item_count, payment_mode }` |
-| `group_detected` | aggregator | `{ group_id, member_session_ids }` |
 | `health_warning` | any ingester | `{ source, reason }` |
 
 Full schema with JSON Schema validation lives in
@@ -247,14 +237,18 @@ FastAPI (`services/api`). All responses JSON; query params standard.
 
 | Endpoint | Returns |
 |---|---|
-| `GET /metrics?from=…&to=…` | footfall, unique sessions, avg dwell, conversion |
-| `GET /funnel?from=…&to=…`  | counts per funnel stage + drop-off % |
-| `GET /zones`               | per-zone unique visitors, total dwell, peak hour |
-| `GET /anomalies?from=…&to=…` | list of detected anomalies with severity |
-| `GET /sessions/{id}`       | full timeline of a single session, all cameras |
-| `GET /cameras`             | per-camera health, fps, last event ts |
+| `GET /metrics?hours=N`     | footfall, conversion, revenue ₹, avg basket, items, dwell |
+| `GET /funnel?hours=N`      | cumulative counts per funnel stage |
+| `GET /hourly?hours=N`      | per-hour footfall + purchases (for the trend chart) |
+| `GET /sales?hours=N`       | top salespeople, payment-mode mix, hourly revenue |
+| `GET /zones?hours=N`       | per-zone unique visitors, total dwell, avg dwell |
+| `GET /anomalies?hours=N`   | detected anomalies with severity + details |
+| `GET /activity?limit=N`    | recent customer sessions (purchases + walks) |
+| `GET /sessions/{id}`       | full row for a single session |
+| `GET /cameras`             | per-camera event rate + last event ts |
+| `GET /events/recent?n=N`   | tail of the raw Redis Stream (debug) |
 | `GET /healthz` `/readyz`   | liveness / readiness |
-| `GET /metrics-prom`        | Prometheus exposition |
+| `GET /metrics-prom`        | Prometheus exposition (API metrics only) |
 
 OpenAPI spec is auto-published at `/docs`.
 
@@ -273,23 +267,22 @@ Each anomaly is persisted as a row and surfaced through `/anomalies`.
 
 ## 9. Production readiness
 
-- **Deployment**: single `docker compose up`. Health checks gate startup
-  order (Redis → Postgres → aggregator → ingest×5 → api/dashboard).
+- **Deployment**: single `docker compose up --build`. Healthcheck-gated
+  startup (`--wait`) verified in CI by the `stack` job.
 - **Observability**:
-  - Structured JSON logs with `trace_id` propagated through Redis message
-    headers.
-  - Prometheus metrics: events-per-second per camera, processing lag,
-    cross-camera match rate, API latency histograms.
-  - OpenTelemetry traces from API → Postgres exported to the optional
-    `otel-collector` container.
+  - Structured JSON logs (`structlog`) on every service.
+  - Prometheus exposition on the API (`/metrics-prom`) — API request
+    counters today; per-camera ingest counters land when the video
+    profile is activated.
 - **Testing**:
-  - Unit tests for tripwire crossing, zone polygon lookup, session
-    state-machine, cross-camera matcher (synthetic embeddings), POS
-    timestamp join.
-  - Integration test that replays a 30 s fixture clip from each camera
-    + synthetic POS rows and asserts a known event sequence and final
-    `/metrics` payload.
-  - CI workflow runs `pytest` + `ruff` + `mypy` on every push.
+  - 57 unit + integration tests covering: schema round-trips, tripwire
+    crossing, polygon containment, role-specific event handlers, session
+    state machine (entries, exits, dwell, POS join, re-entry), POS CSV
+    parsing, anomaly detector, demo-seed distribution, and an end-to-end
+    synth → SessionStore → funnel pipeline.
+  - CI runs three jobs: `test` (ruff + pytest), `compose` (compose-file
+    validation), `stack` (real `docker compose up` + curl assertions on
+    `/metrics` and `/funnel`).
 
 ## 10. Out of scope (by design)
 
@@ -315,9 +308,10 @@ tested:
 | Aggregator session state machine (entry → exit, zones, dwell, POS join, re-entry, staff tag) | ✅ | `services/aggregator/session.py` |
 | Postgres persistence (sessions, zone visits, raw events, hourly rollup) | ✅ | `services/aggregator/db.py` |
 | Anomaly detection (footfall z-score, conversion drop, dead zone) | ✅ | `services/aggregator/anomalies.py` |
-| FastAPI (`/metrics`, `/funnel`, `/anomalies`, `/zones`, `/sessions/{id}`, `/cameras`) | ✅ | `services/api/` |
-| Streamlit dashboard with auto-refresh + session lookup | ✅ | `services/dashboard/` |
-| 44 unit tests + 5 integration tests; ruff + CI gates | ✅ | `tests/`, `.github/workflows/ci.yml` |
+| FastAPI (12 endpoints incl. `/metrics`, `/funnel`, `/hourly`, `/sales`, `/zones`, `/activity`, `/anomalies`, `/sessions/{id}`, `/cameras`) | ✅ | `services/api/` |
+| Streamlit dashboard with auto-refresh, sales + payments breakdown, live activity feed | ✅ | `services/dashboard/` |
+| Demo data seed (480 sessions over 24h) for instant first impression | ✅ | `services/aggregator/seed.py` |
+| 52 unit + 5 integration tests; 3-job CI (ruff/pytest, compose-config, live stack bring-up) | ✅ | `tests/`, `.github/workflows/ci.yml` |
 | **Per-camera YOLOv8n + ByteTrack worker** | ✅ Logic tested; runtime needs footage | `services/ingest/video_worker.py` |
 
 The video worker is fully implemented. Logic that doesn't depend on a

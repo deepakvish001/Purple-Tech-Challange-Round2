@@ -21,7 +21,6 @@ EventType = Literal[
     "checkout_observed",
     "staff_observed",
     "pos_receipt",
-    "group_detected",
     "health_warning",
 ]
 

@@ -222,6 +222,54 @@ st.divider()
 
 
 # --------------------------------------------------------------------------
+# Sales breakdown — salespeople + payment modes
+# --------------------------------------------------------------------------
+
+
+st.subheader("Sales breakdown")
+sales = _get("/sales", hours=hours) or {}
+sp_rows   = sales.get("top_salespeople", []) if isinstance(sales, dict) else []
+mode_rows = sales.get("payment_modes",   []) if isinstance(sales, dict) else []
+
+sa, sb = st.columns([5, 5])
+
+with sa:
+    st.caption("Top salespeople (by revenue)")
+    if sp_rows:
+        df_sp = pd.DataFrame(sp_rows)
+        df_sp["Salesperson"] = df_sp["salesperson"].astype(str)
+        df_sp["Revenue"]     = df_sp["revenue"].apply(_inr)
+        df_sp["Purchases"]   = df_sp["purchases"]
+        df_sp["Items"]       = df_sp["items"]
+        st.dataframe(
+            df_sp[["Salesperson", "Revenue", "Purchases", "Items"]],
+            hide_index=True,
+            use_container_width=True,
+            height=215,
+        )
+    else:
+        st.info("No purchases yet.")
+
+with sb:
+    st.caption("Payment mode mix")
+    if mode_rows:
+        df_m = pd.DataFrame(mode_rows)
+        df_m["Mode"]      = df_m["mode"]
+        df_m["Revenue"]   = df_m["revenue"].apply(_inr)
+        df_m["Purchases"] = df_m["purchases"]
+        st.dataframe(
+            df_m[["Mode", "Revenue", "Purchases"]],
+            hide_index=True,
+            use_container_width=True,
+            height=215,
+        )
+    else:
+        st.info("No payment data yet.")
+
+st.divider()
+
+
+# --------------------------------------------------------------------------
 # Live activity + anomalies
 # --------------------------------------------------------------------------
 

@@ -132,6 +132,12 @@ async def activity(limit: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
     return {"sessions": await db.fetch_recent_purchases(pool, limit=limit)}
 
 
+@app.get("/sales")
+async def sales(hours: int = Query(24, ge=1, le=168)) -> dict[str, Any]:
+    pool = _pool_or_503(app)
+    return await db.fetch_sales_breakdown(pool, hours=hours)
+
+
 @app.get("/sessions/{session_id}")
 async def session_get(session_id: str) -> dict[str, Any]:
     pool = _pool_or_503(app)

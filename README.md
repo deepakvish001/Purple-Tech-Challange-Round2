@@ -26,9 +26,8 @@ Built for the Purplle Tech Challenge 2026 — Round 2. See
    views the aggregator refreshes every 30 s.
 5. **Dashboard** — Streamlit live UI auto-refreshes every 5 s.
 
-See [`docs/DESIGN.md`](docs/DESIGN.md) §11 for what's shipped vs. what's
-deferred (the per-camera YOLOv8 worker is a stub by design — rationale
-in CHOICES.md §10).
+See [`docs/DESIGN.md`](docs/DESIGN.md) §11 for the shipped-vs-deferred
+status table.
 
 ## Run
 
@@ -45,6 +44,9 @@ footage download needed.
 - API docs:         <http://localhost:8000/docs>
 - Live metrics:     <http://localhost:8000/metrics>
 - Live funnel:      <http://localhost:8000/funnel>
+- Sales breakdown:  <http://localhost:8000/sales>
+- Hourly trend:     <http://localhost:8000/hourly>
+- Activity feed:    <http://localhost:8000/activity>
 - Recent events:    <http://localhost:8000/events/recent?n=20>
 - Prometheus exp:   <http://localhost:8000/metrics-prom>
 

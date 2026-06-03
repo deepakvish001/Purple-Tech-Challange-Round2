@@ -219,6 +219,58 @@ async def fetch_recent_purchases(pool: AsyncConnectionPool, limit: int = 20) -> 
     return [dict(r) for r in rows]
 
 
+async def fetch_sales_breakdown(pool: AsyncConnectionPool, hours: int = 24) -> dict[str, Any]:
+    """Top salespeople, payment-mode split, hourly revenue."""
+    by_salesperson_sql = """
+        SELECT receipt_salesperson AS salesperson,
+               COUNT(*) AS purchases,
+               COALESCE(SUM(receipt_total), 0)::float AS revenue,
+               COALESCE(SUM(receipt_items), 0)        AS items
+        FROM sessions
+        WHERE entered_at >= now() - (%s * interval '1 hour')
+          AND receipt_total IS NOT NULL
+          AND role != 'staff'
+          AND receipt_salesperson IS NOT NULL
+        GROUP BY receipt_salesperson
+        ORDER BY revenue DESC
+        LIMIT 5
+    """
+    by_mode_sql = """
+        SELECT COALESCE(receipt_mode, 'UNKNOWN') AS mode,
+               COUNT(*) AS purchases,
+               COALESCE(SUM(receipt_total), 0)::float AS revenue
+        FROM sessions
+        WHERE entered_at >= now() - (%s * interval '1 hour')
+          AND receipt_total IS NOT NULL
+          AND role != 'staff'
+        GROUP BY mode
+        ORDER BY revenue DESC
+    """
+    hourly_revenue_sql = """
+        SELECT date_trunc('hour', checkout_at) AS hour_bucket,
+               COUNT(*)                        AS purchases,
+               COALESCE(SUM(receipt_total), 0)::float AS revenue
+        FROM sessions
+        WHERE checkout_at >= now() - (%s * interval '1 hour')
+          AND receipt_total IS NOT NULL
+          AND role != 'staff'
+        GROUP BY hour_bucket
+        ORDER BY hour_bucket ASC
+    """
+    async with pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        await cur.execute(by_salesperson_sql, (hours,))
+        salespeople = [dict(r) for r in await cur.fetchall()]
+        await cur.execute(by_mode_sql, (hours,))
+        modes = [dict(r) for r in await cur.fetchall()]
+        await cur.execute(hourly_revenue_sql, (hours,))
+        hourly = [dict(r) for r in await cur.fetchall()]
+    return {
+        "top_salespeople": salespeople,
+        "payment_modes":   modes,
+        "hourly_revenue":  hourly,
+    }
+
+
 async def fetch_funnel(pool: AsyncConnectionPool, hours: int = 24) -> dict[str, int]:
     sql = """
         SELECT funnel_stage, COUNT(*) AS n
