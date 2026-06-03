@@ -1,36 +1,42 @@
-"""Streamlit dashboard.
+"""Streamlit dashboard — Brigade Road, Bangalore.
 
-Reads from the API service (not directly from the DB) so the dashboard
-keeps working against any deployment that exposes the documented HTTP
-contract. Auto-refreshes every 5 s.
-
-Layout:
-  • Header KPIs: footfall, unique visitors, conversion %, avg dwell
-  • Funnel waterfall (entered → purchased)
-  • Zone heat: unique visitors per shelf
-  • Anomalies feed
-  • Camera health + recent events tail
-  • Session lookup
+Business-narrative layout. Reads from the API HTTP contract.
 """
 
 from __future__ import annotations
 
 import os
 import time
-from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 import pandas as pd
 import streamlit as st
 
-API_BASE = os.environ.get("API_BASE", "http://api:8000")
+API_BASE  = os.environ.get("API_BASE", "http://api:8000")
 REFRESH_S = int(os.environ.get("DASHBOARD_REFRESH_S", "5"))
 
 st.set_page_config(
-    page_title="Store Intelligence — Brigade Road",
-    page_icon=":bar_chart:",
+    page_title="Purplle — Brigade Road",
+    page_icon="🛍️",
     layout="wide",
+)
+
+st.markdown(
+    """
+    <style>
+      .block-container { padding-top: 1.2rem; }
+      [data-testid="stMetricValue"] { font-size: 30px; }
+      [data-testid="stMetricLabel"] { font-size: 12px; opacity: 0.7; text-transform: uppercase; }
+      .funnel-bar  { background: linear-gradient(90deg, #7e22ce, #b22ba9); height: 22px; border-radius: 4px; }
+      .funnel-row  { font-family: ui-monospace, monospace; padding: 6px 0; }
+      .activity    { font-family: ui-monospace, monospace; font-size: 13px; padding: 2px 0; opacity: 0.9; }
+      .anomaly     { background: #2b1f1f; border-left: 3px solid #f59e0b; padding: 8px 12px; margin: 4px 0; border-radius: 4px; }
+      .anomaly.alert { background: #2b1717; border-left-color: #ef4444; }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 
@@ -39,48 +45,102 @@ st.set_page_config(
 # --------------------------------------------------------------------------
 
 
-def _get(path: str, **params: Any) -> Mapping[str, Any] | list[Any] | None:
+def _get(path: str, **params: Any) -> Any:
     try:
         r = httpx.get(f"{API_BASE}{path}", params=params, timeout=4.0)
         r.raise_for_status()
         return r.json()
-    except Exception as e:
-        st.warning(f"API call failed: `GET {path}` — {e}")
+    except Exception:
         return None
 
 
+def _inr(n: float) -> str:
+    """₹ formatting with thousand separators (₹ 1,07,881 — Indian numbering)."""
+    n = int(round(n))
+    if n < 1000:
+        return f"₹ {n:,}"
+    s = str(n)
+    last3, rest = s[-3:], s[:-3]
+    rest_grouped = ""
+    while len(rest) > 2:
+        rest_grouped = "," + rest[-2:] + rest_grouped
+        rest = rest[:-2]
+    return f"₹ {rest}{rest_grouped},{last3}"
+
+
+def _fmt_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    m, s = divmod(seconds, 60)
+    if m < 60:
+        return f"{m}m {s:02d}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m:02d}m"
+
+
+def _fmt_time(ts: str) -> str:
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.strftime("%H:%M")
+    except Exception:
+        return ts
+
+
 # --------------------------------------------------------------------------
-# Sidebar
+# Sidebar — small, focused
 # --------------------------------------------------------------------------
 
 
 with st.sidebar:
-    st.markdown("### Store ST1008 — Brigade Road")
-    hours = st.slider("Window (hours)", 1, 168, 24, step=1)
-    auto = st.toggle("Auto-refresh", value=True)
-    st.caption(f"API: `{API_BASE}`")
-    health = _get("/readyz")
-    if isinstance(health, dict):
-        ok = health.get("status") == "ready"
-        st.success("System ready") if ok else st.warning(f"Degraded: {health}")
+    st.markdown("### Store ST1008")
+    st.caption("Brigade Road · Bangalore")
+    st.divider()
+    window = st.radio("Window", ["Last 24h", "Last 7d"], horizontal=True)
+    hours  = 24 if window == "Last 24h" else 168
+    auto   = st.toggle("Auto-refresh", value=True)
     st.caption(f"Refresh every {REFRESH_S}s")
+    st.divider()
+    ready = _get("/readyz")
+    if isinstance(ready, dict) and ready.get("status") == "ready":
+        st.success("System healthy")
+    else:
+        st.warning("Service degraded")
+    st.caption(f"API: `{API_BASE}`")
 
 
 # --------------------------------------------------------------------------
-# Header KPIs
+# Header + KPI strip
 # --------------------------------------------------------------------------
 
 
-st.title("Store Intelligence")
 metrics = _get("/metrics", hours=hours) or {}
 
+footfall = int(metrics.get("footfall", 0))
+unique   = int(metrics.get("unique_visitors", 0))
+purchases = int(metrics.get("purchases", 0))
+conv     = float(metrics.get("conversion_rate", 0.0)) * 100
+avg_dwell = float(metrics.get("avg_session_duration_s", 0.0))
+revenue   = float(metrics.get("revenue_inr", 0.0))
+basket    = float(metrics.get("avg_basket_inr", 0.0))
+items     = int(metrics.get("items_sold", 0))
+
+st.title("Purplle · Brigade Road")
+st.caption(f"Live retail intelligence — {window.lower()}")
+
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Footfall",         f"{int(metrics.get('footfall', 0)):,}")
-c2.metric("Unique visitors",  f"{int(metrics.get('unique_visitors', 0)):,}")
-conv = float(metrics.get("conversion_rate", 0.0)) * 100
-c3.metric("Conversion",       f"{conv:.1f}%")
-avg = float(metrics.get("avg_session_duration_s", 0.0))
-c4.metric("Avg dwell",        f"{avg:.0f}s")
+c1.metric("Footfall",        f"{footfall:,}")
+c2.metric("Conversion rate", f"{conv:.1f}%")
+c3.metric("Revenue",         _inr(revenue))
+c4.metric("Avg basket",      _inr(basket))
+
+c5, c6, c7, c8 = st.columns(4)
+c5.metric("Unique visitors", f"{unique:,}")
+c6.metric("Purchases",       f"{purchases:,}")
+c7.metric("Items sold",      f"{items:,}")
+c8.metric("Avg dwell time",  _fmt_duration(avg_dwell))
+
+st.divider()
 
 
 # --------------------------------------------------------------------------
@@ -88,109 +148,153 @@ c4.metric("Avg dwell",        f"{avg:.0f}s")
 # --------------------------------------------------------------------------
 
 
-st.subheader("Funnel")
+st.subheader("Conversion funnel")
+
 funnel = _get("/funnel", hours=hours) or {}
 stages = funnel.get("stages", {}) if isinstance(funnel, dict) else {}
-ORDER = ["entered", "browsed", "engaged", "checkout_queued", "purchased"]
-df_funnel = pd.DataFrame(
-    {"stage": ORDER, "sessions": [int(stages.get(s, 0)) for s in ORDER]}
-)
-st.bar_chart(df_funnel.set_index("stage"), height=240)
+STAGE_LABELS = [
+    ("entered",         "Entered the store"),
+    ("browsed",         "Browsed a shelf"),
+    ("engaged",         "Engaged (≥ 20 s dwell)"),
+    ("checkout_queued", "Reached the counter"),
+    ("purchased",       "Purchased"),
+]
+
+base = max(int(stages.get("entered", 0)), 1)
+for stage_id, label in STAGE_LABELS:
+    n = int(stages.get(stage_id, 0))
+    pct = (n / base) * 100 if base else 0
+    bar_pct = (n / base) * 100 if base else 0
+    col_l, col_b, col_r = st.columns([3, 8, 2])
+    col_l.markdown(f"**{label}**")
+    col_b.markdown(
+        f'<div style="background:#1f2937; border-radius:4px; overflow:hidden;">'
+        f'<div class="funnel-bar" style="width:{bar_pct:.1f}%"></div></div>',
+        unsafe_allow_html=True,
+    )
+    col_r.markdown(f"<span class='funnel-row'>{n:,} · {pct:.1f}%</span>", unsafe_allow_html=True)
+
+st.divider()
 
 
 # --------------------------------------------------------------------------
-# Zones
+# Shelves + hourly trend
 # --------------------------------------------------------------------------
 
 
-left, right = st.columns([3, 2])
+left, right = st.columns([5, 5])
 
 with left:
-    st.subheader("Zone engagement")
+    st.subheader("Top performing shelves")
     zones = _get("/zones", hours=hours) or {}
     rows = zones.get("zones", []) if isinstance(zones, dict) else []
     if rows:
-        df_z = pd.DataFrame(rows)
-        df_z = df_z.sort_values("unique_visitors", ascending=False)
+        df = pd.DataFrame(rows).head(8)
+        df["Shelf"]    = df["zone_id"].str.replace("shelf_", "", regex=False).str.replace("_", " ").str.title()
+        df["Visitors"] = df["unique_visitors"]
+        df["Avg dwell"] = df["avg_dwell_s"].apply(lambda x: f"{x:.0f}s")
         st.dataframe(
-            df_z,
+            df[["Shelf", "Visitors", "Avg dwell"]],
             hide_index=True,
             use_container_width=True,
-            column_config={
-                "zone_id":        st.column_config.TextColumn("Zone"),
-                "unique_visitors":st.column_config.NumberColumn("Visitors"),
-                "total_dwell_s":  st.column_config.NumberColumn("Total dwell (s)", format="%.0f"),
-                "avg_dwell_s":    st.column_config.NumberColumn("Avg dwell (s)",   format="%.1f"),
-            },
+            height=320,
         )
     else:
-        st.info("No zone visits yet.")
+        st.info("No shelf visits yet.")
 
 with right:
-    st.subheader("Cameras")
-    cams = _get("/cameras") or {}
-    crows = cams.get("cameras", []) if isinstance(cams, dict) else []
-    if crows:
-        df_c = pd.DataFrame(crows)
-        st.dataframe(df_c, hide_index=True, use_container_width=True)
+    st.subheader("Hourly footfall & conversion")
+    hourly = _get("/hourly", hours=hours) or {}
+    hrows = hourly.get("hours", []) if isinstance(hourly, dict) else []
+    if hrows:
+        df_h = pd.DataFrame(hrows)
+        df_h["hour_bucket"] = pd.to_datetime(df_h["hour_bucket"])
+        df_h["Hour"] = df_h["hour_bucket"].dt.strftime("%H:00")
+        df_h = df_h.rename(columns={"footfall": "Footfall", "purchases": "Purchases"})
+        st.bar_chart(
+            df_h.set_index("Hour")[["Footfall", "Purchases"]],
+            height=300,
+        )
     else:
-        st.info("No camera activity in the last 5 minutes.")
+        st.info("No hourly data yet.")
+
+st.divider()
 
 
 # --------------------------------------------------------------------------
-# Anomalies
+# Live activity + anomalies
 # --------------------------------------------------------------------------
 
 
-st.subheader(f"Anomalies (last {hours}h)")
-anoms = _get("/anomalies", hours=hours) or {}
-arows = anoms.get("anomalies", []) if isinstance(anoms, dict) else []
-if arows:
-    df_a = pd.DataFrame(arows)
-    if "detected_at" in df_a:
-        df_a["detected_at"] = pd.to_datetime(df_a["detected_at"])
-    st.dataframe(
-        df_a[["detected_at", "kind", "severity", "details"]],
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            "detected_at": st.column_config.DatetimeColumn("Detected"),
-            "kind":        st.column_config.TextColumn("Kind"),
-            "severity":    st.column_config.TextColumn("Severity"),
-            "details":     st.column_config.JsonColumn("Details", width="large"),
-        },
-    )
-else:
-    st.success("No anomalies in this window.")
+la, ra = st.columns([5, 5])
+
+with la:
+    st.subheader("Recent activity")
+    act = _get("/activity", limit=15) or {}
+    arows = act.get("sessions", []) if isinstance(act, dict) else []
+    if arows:
+        for s in arows:
+            stage = s.get("funnel_stage", "")
+            ts = s.get("checkout_at") or s.get("entered_at") or ""
+            t  = _fmt_time(ts) if isinstance(ts, str) else ""
+            if stage == "purchased":
+                total = float(s.get("receipt_total") or 0)
+                items_n = int(s.get("receipt_items") or 0)
+                sp = s.get("receipt_salesperson") or "—"
+                line = f"{t} · ✓ Purchase {_inr(total)} ({items_n} items) · salesperson {sp}"
+            elif stage == "checkout_queued":
+                line = f"{t} · ⏳ Reached the counter, did not transact"
+            elif stage == "engaged":
+                line = f"{t} · 👀 Engaged with a shelf"
+            elif stage == "browsed":
+                line = f"{t} · 🛍️ Browsed a shelf"
+            else:
+                line = f"{t} · → Entered the store"
+            st.markdown(f"<div class='activity'>{line}</div>", unsafe_allow_html=True)
+    else:
+        st.info("No activity yet.")
+
+with ra:
+    st.subheader("Anomalies")
+    anoms = _get("/anomalies", hours=hours) or {}
+    awrows = anoms.get("anomalies", []) if isinstance(anoms, dict) else []
+    if awrows:
+        for a in awrows[:8]:
+            sev = a.get("severity", "info")
+            kind = a.get("kind", "")
+            d = a.get("details", {}) or {}
+            cls = "anomaly alert" if sev == "alert" else "anomaly"
+            if kind == "footfall_outlier":
+                msg = (
+                    f"<b>Footfall outlier</b> — {int(d.get('footfall', 0))} entries "
+                    f"vs. baseline ~{d.get('baseline_mean', 0):.0f} "
+                    f"(z = {d.get('z_score', 0):.1f})"
+                )
+            elif kind == "dead_zone":
+                z = (d.get("zone_id") or "").replace("shelf_", "").replace("_", " ").title()
+                msg = (
+                    f"<b>Dead zone</b> — {z}: {int(d.get('visitors_last_hour', 0))} visitors "
+                    f"vs. typical {d.get('baseline_median', 0):.0f}"
+                )
+            elif kind == "conversion_drop":
+                msg = (
+                    f"<b>Conversion drop</b> — "
+                    f"{d.get('drop_pct', 0):.0f}% vs. prior 3h avg"
+                )
+            else:
+                msg = f"<b>{kind}</b> — {d}"
+            st.markdown(f"<div class='{cls}'>{msg}</div>", unsafe_allow_html=True)
+    else:
+        st.success("No anomalies in this window.")
 
 
 # --------------------------------------------------------------------------
-# Recent events + session lookup
+# Footer
 # --------------------------------------------------------------------------
 
 
-with st.expander("Recent events (stream tail)"):
-    recent = _get("/events/recent", n=50) or {}
-    erows = recent.get("events", []) if isinstance(recent, dict) else []
-    if erows:
-        df_e = pd.DataFrame(erows)[
-            ["ts", "type", "camera_id", "role", "embedding_id", "payload"]
-        ]
-        st.dataframe(df_e, hide_index=True, use_container_width=True, height=280)
-
-
-with st.expander("Session lookup"):
-    sid = st.text_input("Session ID (UUID)", value="")
-    if sid:
-        s = _get(f"/sessions/{sid}")
-        if s:
-            st.json(s)
-
-
-# --------------------------------------------------------------------------
-# Auto-refresh
-# --------------------------------------------------------------------------
-
+now_s = datetime.now(UTC).strftime("%H:%M:%S UTC")
+st.caption(f"Updated {now_s} · Purplle Tech Challenge 2026 · Round 2")
 
 if auto:
     time.sleep(REFRESH_S)
