@@ -38,7 +38,7 @@ async def lifespan(app: FastAPI):
         await app.state.bus.close()
 
 
-app = FastAPI(title="Store Intelligence API", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Purpleye API", version="0.3.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
